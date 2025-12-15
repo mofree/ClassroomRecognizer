@@ -1,0 +1,5 @@
+{
+  "name": "ClassroomRecognizer",
+  "description": "A professional-grade real-time video face recognition application designed for classroom environments. Features AI-powered student registration validation using Gemini and customizable recognition parameters for blurry or crowded scenes.",
+  "requestFramePermissions": []
+}

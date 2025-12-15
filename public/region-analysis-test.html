@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Region Analysis Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1e293b;
+            color: #f8fafc;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-section {
+            background-color: #334155;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #2563eb;
+        }
+        button:disabled {
+            background-color: #64748b;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #475569;
+        }
+        .success {
+            background-color: #16a34a;
+        }
+        .error {
+            background-color: #dc2626;
+        }
+        .warning {
+            background-color: #ca8a04;
+        }
+        canvas, img {
+            border: 1px solid #64748b;
+            margin-top: 10px;
+            max-width: 100%;
+        }
+        .instructions {
+            background-color: #334155;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .instruction-steps {
+            list-style-type: decimal;
+            padding-left: 20px;
+        }
+        .instruction-steps li {
+            margin-bottom: 10px;
+        }
+        .debug-info {
+            background-color: #1e293b;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            min-height: 200px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .coordinates-display {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px;
+            border-radius: 3px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>区域分析测试</h1>
+        
+        <div class="instructions">
+            <h3>测试步骤：</h3>
+            <ol class="instruction-steps">
+                <li>点击"加载测试图片"按钮加载一张测试图片</li>
+                <li>在图片上绘制几个选框区域</li>
+                <li>点击"应用选框"按钮，观察是否只在选框区域内检测人脸</li>
+                <li>点击"全图分析"按钮，观察是否在整个图片中检测人脸</li>
+            </ol>
+        </div>
+        
+        <div class="test-section">
+            <h2>区域分析测试</h2>
+            <div>
+                <button id="loadTestImageBtn">加载测试图片</button>
+                <button id="clearRegionsBtn" disabled>清除选框</button>
+                <button id="applyRegionsBtn" disabled>应用选框</button>
+                <button id="fullAnalysisBtn" disabled>全图分析</button>
+            </div>
+            <div id="status" class="result">准备就绪</div>
+            <div id="debugInfo" class="debug-info">调试信息将显示在这里</div>
+            
+            <div style="position: relative; margin-top: 20px; display: inline-block;">
+                <img id="testImage" style="max-width: 800px; max-height: 600px; display: none; user-select: none;" draggable="false" />
+                <!-- Coordinates display -->
+                <div id="coordinatesDisplay" class="coordinates-display" style="display: none;"></div>
+                <!-- Selection rectangles will be dynamically added here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let image = document.getElementById('testImage');
+        let coordinatesDisplay = document.getElementById('coordinatesDisplay');
+        let isSelecting = false;
+        let selectionStart = null;
+        let selectionEnd = null;
+        let regions = [];
+        
+        // DOM Elements
+        const status = document.getElementById('status');
+        const debugInfo = document.getElementById('debugInfo');
+        const loadTestImageBtn = document.getElementById('loadTestImageBtn');
+        const clearRegionsBtn = document.getElementById('clearRegionsBtn');
+        const applyRegionsBtn = document.getElementById('applyRegionsBtn');
+        const fullAnalysisBtn = document.getElementById('fullAnalysisBtn');
+        
+        // Log debug information
+        function logDebug(info) {
+            const timestamp = new Date().toLocaleTimeString();
+            debugInfo.innerHTML = `[${timestamp}] ${info}<br>` + debugInfo.innerHTML;
+            console.log('[DEBUG]', info);
+        }
+        
+        // Update coordinates display
+        function updateCoordinatesDisplay(x, y, rect) {
+            coordinatesDisplay.style.display = 'block';
+            coordinatesDisplay.style.left = `${x + 10}px`;
+            coordinatesDisplay.style.top = `${y + 10}px`;
+            coordinatesDisplay.textContent = `Client: (${Math.round(x)}, ${Math.round(y)})`;
+            
+            if (rect) {
+                const imageRect = {
+                    width: image.naturalWidth,
+                    height: image.naturalHeight
+                };
+                
+                // Calculate scale factors
+                const scaleX = imageRect.width / rect.width;
+                const scaleY = imageRect.height / rect.height;
+                
+                // Calculate image coordinates
+                const imageX = (x - rect.left) * scaleX;
+                const imageY = (y - rect.top) * scaleY;
+                
+                coordinatesDisplay.textContent += ` | Image: (${Math.round(imageX)}, ${Math.round(imageY)})`;
+            }
+        }
+        
+        // Hide coordinates display
+        function hideCoordinatesDisplay() {
+            coordinatesDisplay.style.display = 'none';
+        }
+        
+        // Load test image with faces
+        function loadTestImage() {
+            // Create a test image with faces and other elements
+            const canvas = document.createElement('canvas');
+            canvas.width = 800;
+            canvas.height = 600;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw background
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid lines
+            ctx.strokeStyle = '#cccccc';
+            ctx.lineWidth = 1;
+            
+            // Vertical lines
+            for (let x = 0; x <= canvas.width; x += 50) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            
+            // Horizontal lines
+            for (let y = 0; y <= canvas.height; y += 50) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            // Draw labels
+            ctx.fillStyle = '#333333';
+            ctx.font = '12px Arial';
+            for (let x = 0; x <= canvas.width; x += 100) {
+                ctx.fillText(`${x}`, x + 2, 12);
+            }
+            for (let y = 0; y <= canvas.height; y += 100) {
+                ctx.fillText(`${y}`, 2, y + 12);
+            }
+            
+            // Draw some "faces" (circles with eyes and mouth)
+            function drawFace(ctx, x, y, size) {
+                // Face
+                ctx.fillStyle = '#ffcccb';
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Eyes
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(x - size/3, y - size/4, size/6, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(x + size/3, y - size/4, size/6, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Mouth
+                ctx.beginPath();
+                ctx.arc(x, y + size/4, size/4, 0, Math.PI);
+                ctx.stroke();
+            }
+            
+            // Draw faces in different positions
+            drawFace(ctx, 100, 100, 30);  // Face 1
+            drawFace(ctx, 300, 150, 25);  // Face 2
+            drawFace(ctx, 500, 200, 35);  // Face 3
+            drawFace(ctx, 700, 250, 28);  // Face 4
+            drawFace(ctx, 200, 400, 32);  // Face 5
+            drawFace(ctx, 400, 450, 27);  // Face 6
+            drawFace(ctx, 600, 500, 33);  // Face 7
+            
+            // Add some non-face elements to show the difference
+            ctx.fillStyle = '#4ecdc4';
+            ctx.fillRect(150, 300, 80, 80);  // Rectangle
+            
+            ctx.fillStyle = '#45b7d1';
+            ctx.beginPath();
+            ctx.arc(350, 350, 40, 0, Math.PI * 2);
+            ctx.fill();  // Circle
+            
+            ctx.fillStyle = '#96ceb4';
+            ctx.fillRect(550, 100, 60, 100);  // Another rectangle
+            
+            // Set image source
+            image.src = canvas.toDataURL('image/png');
+            image.style.display = 'block';
+            
+            clearRegionsBtn.disabled = false;
+            fullAnalysisBtn.disabled = false;
+            status.textContent = '✅ 测试图片已加载';
+            status.className = 'result success';
+            logDebug('测试图片已加载');
+        }
+        
+        // Clear all regions
+        function clearRegions() {
+            regions = [];
+            // Remove all selection rectangles
+            const rectangles = document.querySelectorAll('.selection-rectangle');
+            rectangles.forEach(rect => rect.remove());
+            
+            clearRegionsBtn.disabled = true;
+            applyRegionsBtn.disabled = true;
+            status.textContent = '选框已清除';
+            status.className = 'result';
+            logDebug('选框已清除');
+        }
+        
+        // Create selection rectangle
+        function createSelectionRectangle(x, y, width, height) {
+            const rect = document.createElement('div');
+            rect.className = 'selection-rectangle';
+            rect.style.position = 'absolute';
+            rect.style.border = '2px dashed #10b981';
+            rect.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+            rect.style.pointerEvents = 'none';
+            rect.style.left = `${x}px`;
+            rect.style.top = `${y}px`;
+            rect.style.width = `${width}px`;
+            rect.style.height = `${height}px`;
+            
+            // Add to image container
+            image.parentNode.appendChild(rect);
+            return rect;
+        }
+        
+        // Simulate region analysis
+        function analyzeRegions() {
+            if (regions.length === 0) {
+                status.textContent = '请先绘制选框';
+                status.className = 'result warning';
+                return;
+            }
+            
+            status.textContent = '正在分析选框区域...';
+            status.className = 'result';
+            
+            // Simulate analysis delay
+            setTimeout(() => {
+                let totalFaces = 0;
+                const facePositions = [];
+                
+                // Check which faces are in the regions
+                const faces = [
+                    {x: 100, y: 100, size: 30},
+                    {x: 300, y: 150, size: 25},
+                    {x: 500, y: 200, size: 35},
+                    {x: 700, y: 250, size: 28},
+                    {x: 200, y: 400, size: 32},
+                    {x: 400, y: 450, size: 27},
+                    {x: 600, y: 500, size: 33}
+                ];
+                
+                regions.forEach((region, regionIndex) => {
+                    const regionFaces = [];
+                    faces.forEach((face, faceIndex) => {
+                        // Check if face center is within region
+                        if (
+                            face.x >= region.x && 
+                            face.x <= region.x + region.width &&
+                            face.y >= region.y && 
+                            face.y <= region.y + region.height
+                        ) {
+                            regionFaces.push(faceIndex + 1);
+                            totalFaces++;
+                        }
+                    });
+                    
+                    logDebug(`区域 ${regionIndex + 1} (${region.x},${region.y} ${region.width}x${region.height}) 包含人脸: ${regionFaces.join(', ') || '无'}`);
+                });
+                
+                status.textContent = `✅ 选框分析完成: 在 ${regions.length} 个选框中找到 ${totalFaces} 张人脸`;
+                status.className = 'result success';
+                logDebug(`总共在选框中找到 ${totalFaces} 张人脸`);
+            }, 1000);
+        }
+        
+        // Simulate full image analysis
+        function analyzeFullImage() {
+            status.textContent = '正在分析整张图片...';
+            status.className = 'result';
+            
+            // Simulate analysis delay
+            setTimeout(() => {
+                // In a real scenario, we would find all 7 faces
+                status.textContent = '✅ 全图分析完成: 找到 7 张人脸';
+                status.className = 'result success';
+                logDebug('全图分析完成: 找到 7 张人脸');
+            }, 1500);
+        }
+        
+        // Mouse event handlers
+        image.addEventListener('mousedown', (e) => {
+            // Prevent default behavior to avoid image dragging
+            e.preventDefault();
+            
+            const rect = image.getBoundingClientRect();
+            const imageRect = {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            };
+            
+            // Calculate scale factors
+            const scaleX = imageRect.width / rect.width;
+            const scaleY = imageRect.height / rect.height;
+            
+            // Calculate mouse position relative to the image
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            logDebug(`MouseDown at client(${e.clientX}, ${e.clientY}), image(${Math.round(x)}, ${Math.round(y)})`);
+            
+            isSelecting = true;
+            selectionStart = {x, y};
+            selectionEnd = {x, y};
+        });
+        
+        image.addEventListener('mousemove', (e) => {
+            // Update coordinates display
+            updateCoordinatesDisplay(e.clientX, e.clientY, image.getBoundingClientRect());
+            
+            if (!isSelecting || !selectionStart) return;
+            
+            // Prevent default behavior to avoid image dragging
+            e.preventDefault();
+            
+            const rect = image.getBoundingClientRect();
+            const imageRect = {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            };
+            
+            // Calculate scale factors
+            const scaleX = imageRect.width / rect.width;
+            const scaleY = imageRect.height / rect.height;
+            
+            // Calculate mouse position relative to the image
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            selectionEnd = {x, y};
+            
+            // Update selection rectangle
+            const startX = Math.min(selectionStart.x, selectionEnd.x);
+            const startY = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            // Remove existing selection rectangle
+            const existingRect = document.querySelector('.current-selection');
+            if (existingRect) {
+                existingRect.remove();
+            }
+            
+            // Create new selection rectangle with correct positioning
+            const displayStartX = (startX / imageRect.width) * rect.width;
+            const displayStartY = (startY / imageRect.height) * rect.height;
+            const displayWidth = (width / imageRect.width) * rect.width;
+            const displayHeight = (height / imageRect.height) * rect.height;
+            
+            const selectionRect = createSelectionRectangle(displayStartX, displayStartY, displayWidth, displayHeight);
+            selectionRect.classList.add('current-selection');
+        });
+        
+        image.addEventListener('mouseup', (e) => {
+            if (!isSelecting || !selectionStart || !selectionEnd) return;
+            
+            // Prevent default behavior to avoid image dragging
+            e.preventDefault();
+            
+            const rect = image.getBoundingClientRect();
+            const imageRect = {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            };
+            
+            // Calculate scale factors
+            const scaleX = imageRect.width / rect.width;
+            const scaleY = imageRect.height / rect.height;
+            
+            // Calculate mouse position relative to the image
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            const startX = Math.min(selectionStart.x, selectionEnd.x);
+            const startY = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            logDebug(`MouseUp at client(${e.clientX}, ${e.clientY}), image(${Math.round(x)}, ${Math.round(y)}), selection(${Math.round(startX)}, ${Math.round(startY)}, ${Math.round(width)}, ${Math.round(height)})`);
+            
+            // Only create region if it's large enough
+            if (width > 10 && height > 10) {
+                const newRegion = {
+                    id: `region_${Date.now()}`,
+                    x: startX,
+                    y: startY,
+                    width: width,
+                    height: height
+                };
+                
+                regions.push(newRegion);
+                
+                // Convert to display coordinates and create permanent rectangle
+                const displayStartX = (startX / imageRect.width) * rect.width;
+                const displayStartY = (startY / imageRect.height) * rect.height;
+                const displayWidth = (width / imageRect.width) * rect.width;
+                const displayHeight = (height / imageRect.height) * rect.height;
+                
+                const regionRect = createSelectionRectangle(displayStartX, displayStartY, displayWidth, displayHeight);
+                regionRect.style.border = '2px solid #10b981';
+                regionRect.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+                regionRect.classList.remove('current-selection');
+                
+                status.textContent = `✅ 已创建选框 ${regions.length}: (${Math.round(startX)}, ${Math.round(startY)}) ${Math.round(width)}x${Math.round(height)}`;
+                status.className = 'result success';
+                
+                // Enable apply regions button
+                applyRegionsBtn.disabled = false;
+            }
+            
+            isSelecting = false;
+            selectionStart = null;
+            selectionEnd = null;
+            
+            // Remove current selection rectangle
+            const currentRect = document.querySelector('.current-selection');
+            if (currentRect) {
+                currentRect.remove();
+            }
+        });
+        
+        image.addEventListener('mouseleave', () => {
+            isSelecting = false;
+            selectionStart = null;
+            selectionEnd = null;
+            hideCoordinatesDisplay();
+            
+            // Remove current selection rectangle
+            const currentRect = document.querySelector('.current-selection');
+            if (currentRect) {
+                currentRect.remove();
+            }
+            
+            logDebug('Mouse leave');
+        });
+        
+        // Prevent image dragging
+        image.addEventListener('dragstart', (e) => {
+            e.preventDefault();
+            logDebug('Drag start prevented');
+        });
+        
+        // Initialize
+        loadTestImageBtn.addEventListener('click', loadTestImage);
+        clearRegionsBtn.addEventListener('click', clearRegions);
+        applyRegionsBtn.addEventListener('click', analyzeRegions);
+        fullAnalysisBtn.addEventListener('click', analyzeFullImage);
+    </script>
+</body>
+</html>

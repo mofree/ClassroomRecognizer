@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Precise Coordinate Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1e293b;
+            color: #f8fafc;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-section {
+            background-color: #334155;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #2563eb;
+        }
+        button:disabled {
+            background-color: #64748b;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #475569;
+        }
+        .success {
+            background-color: #16a34a;
+        }
+        .error {
+            background-color: #dc2626;
+        }
+        .warning {
+            background-color: #ca8a04;
+        }
+        canvas, img {
+            border: 1px solid #64748b;
+            margin-top: 10px;
+            max-width: 100%;
+        }
+        .instructions {
+            background-color: #334155;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .instruction-steps {
+            list-style-type: decimal;
+            padding-left: 20px;
+        }
+        .instruction-steps li {
+            margin-bottom: 10px;
+        }
+        .debug-info {
+            background-color: #1e293b;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            min-height: 200px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .coordinates-display {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px;
+            border-radius: 3px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>精确坐标测试</h1>
+        
+        <div class="instructions">
+            <h3>测试步骤：</h3>
+            <ol class="instruction-steps">
+                <li>点击"加载测试图片"按钮加载一张测试图片</li>
+                <li>在图片上按住鼠标左键并拖拽创建选框</li>
+                <li>观察选框是否与鼠标位置完全吻合</li>
+                <li>查看调试信息确认坐标计算准确</li>
+            </ol>
+        </div>
+        
+        <div class="test-section">
+            <h2>精确坐标测试</h2>
+            <div>
+                <button id="loadTestImageBtn">加载测试图片</button>
+                <button id="clearRegionsBtn" disabled>清除选框</button>
+                <button id="toggleModeBtn">切换模式 (当前: 绘制选框)</button>
+            </div>
+            <div id="status" class="result">准备就绪</div>
+            <div id="debugInfo" class="debug-info">调试信息将显示在这里</div>
+            
+            <div style="position: relative; margin-top: 20px; display: inline-block;">
+                <img id="testImage" style="max-width: 800px; max-height: 600px; display: none; user-select: none;" draggable="false" />
+                <!-- Coordinates display -->
+                <div id="coordinatesDisplay" class="coordinates-display" style="display: none;"></div>
+                <!-- Selection rectangles will be dynamically added here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let image = document.getElementById('testImage');
+        let coordinatesDisplay = document.getElementById('coordinatesDisplay');
+        let isSelecting = false;
+        let selectionStart = null;
+        let selectionEnd = null;
+        let regions = [];
+        let mode = 'draw'; // 'draw' or 'move'
+        
+        // DOM Elements
+        const status = document.getElementById('status');
+        const debugInfo = document.getElementById('debugInfo');
+        const loadTestImageBtn = document.getElementById('loadTestImageBtn');
+        const clearRegionsBtn = document.getElementById('clearRegionsBtn');
+        const toggleModeBtn = document.getElementById('toggleModeBtn');
+        
+        // Log debug information
+        function logDebug(info) {
+            const timestamp = new Date().toLocaleTimeString();
+            debugInfo.innerHTML = `[${timestamp}] ${info}<br>` + debugInfo.innerHTML;
+            console.log('[DEBUG]', info);
+        }
+        
+        // Update coordinates display
+        function updateCoordinatesDisplay(x, y, rect) {
+            coordinatesDisplay.style.display = 'block';
+            coordinatesDisplay.style.left = `${x + 10}px`;
+            coordinatesDisplay.style.top = `${y + 10}px`;
+            coordinatesDisplay.textContent = `Client: (${Math.round(x)}, ${Math.round(y)})`;
+            
+            if (rect) {
+                const imageRect = {
+                    width: image.naturalWidth,
+                    height: image.naturalHeight
+                };
+                
+                // Calculate scale factors
+                const scaleX = imageRect.width / rect.width;
+                const scaleY = imageRect.height / rect.height;
+                
+                // Calculate image coordinates
+                const imageX = (x - rect.left) * scaleX;
+                const imageY = (y - rect.top) * scaleY;
+                
+                coordinatesDisplay.textContent += ` | Image: (${Math.round(imageX)}, ${Math.round(imageY)})`;
+            }
+        }
+        
+        // Hide coordinates display
+        function hideCoordinatesDisplay() {
+            coordinatesDisplay.style.display = 'none';
+        }
+        
+        // Load test image
+        function loadTestImage() {
+            // Create a test image with a grid pattern and markers
+            const canvas = document.createElement('canvas');
+            canvas.width = 800;
+            canvas.height = 600;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw grid background
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid lines
+            ctx.strokeStyle = '#cccccc';
+            ctx.lineWidth = 1;
+            
+            // Vertical lines
+            for (let x = 0; x <= canvas.width; x += 50) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            
+            // Horizontal lines
+            for (let y = 0; y <= canvas.height; y += 50) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            // Draw labels
+            ctx.fillStyle = '#333333';
+            ctx.font = '12px Arial';
+            for (let x = 0; x <= canvas.width; x += 100) {
+                ctx.fillText(`${x}`, x + 2, 12);
+            }
+            for (let y = 0; y <= canvas.height; y += 100) {
+                ctx.fillText(`${y}`, 2, y + 12);
+            }
+            
+            // Add some distinctive markers
+            ctx.fillStyle = '#ff6b6b';
+            ctx.fillRect(100, 100, 50, 50);
+            
+            ctx.fillStyle = '#4ecdc4';
+            ctx.fillRect(300, 200, 50, 50);
+            
+            ctx.fillStyle = '#45b7d1';
+            ctx.fillRect(500, 300, 50, 50);
+            
+            ctx.fillStyle = '#96ceb4';
+            ctx.fillRect(700, 400, 50, 50);
+            
+            ctx.fillStyle = '#feca57';
+            ctx.fillRect(200, 500, 50, 50);
+            
+            // Set image source
+            image.src = canvas.toDataURL('image/png');
+            image.style.display = 'block';
+            
+            clearRegionsBtn.disabled = false;
+            status.textContent = '✅ 测试图片已加载';
+            status.className = 'result success';
+            logDebug('测试图片已加载');
+        }
+        
+        // Clear all regions
+        function clearRegions() {
+            regions = [];
+            // Remove all selection rectangles
+            const rectangles = document.querySelectorAll('.selection-rectangle');
+            rectangles.forEach(rect => rect.remove());
+            
+            clearRegionsBtn.disabled = true;
+            status.textContent = '选框已清除';
+            status.className = 'result';
+            logDebug('选框已清除');
+        }
+        
+        // Toggle mode
+        function toggleMode() {
+            mode = mode === 'draw' ? 'move' : 'draw';
+            toggleModeBtn.textContent = `切换模式 (当前: ${mode === 'draw' ? '绘制选框' : '移动图片'})`;
+            logDebug(`模式切换为: ${mode}`);
+        }
+        
+        // Create selection rectangle
+        function createSelectionRectangle(x, y, width, height) {
+            const rect = document.createElement('div');
+            rect.className = 'selection-rectangle';
+            rect.style.position = 'absolute';
+            rect.style.border = '2px dashed #10b981';
+            rect.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+            rect.style.pointerEvents = 'none';
+            rect.style.left = `${x}px`;
+            rect.style.top = `${y}px`;
+            rect.style.width = `${width}px`;
+            rect.style.height = `${height}px`;
+            
+            // Add to image container
+            image.parentNode.appendChild(rect);
+            return rect;
+        }
+        
+        // Mouse event handlers
+        image.addEventListener('mousedown', (e) => {
+            // Prevent default behavior to avoid image dragging
+            e.preventDefault();
+            
+            if (mode === 'move') {
+                logDebug('当前为移动模式，不处理选框绘制');
+                return;
+            }
+            
+            const rect = image.getBoundingClientRect();
+            const imageRect = {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            };
+            
+            // Calculate scale factors
+            const scaleX = imageRect.width / rect.width;
+            const scaleY = imageRect.height / rect.height;
+            
+            // Calculate mouse position relative to the image
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            logDebug(`MouseDown at client(${e.clientX}, ${e.clientY}), image(${Math.round(x)}, ${Math.round(y)})`);
+            
+            isSelecting = true;
+            selectionStart = {x, y};
+            selectionEnd = {x, y};
+        });
+        
+        image.addEventListener('mousemove', (e) => {
+            // Update coordinates display
+            updateCoordinatesDisplay(e.clientX, e.clientY, image.getBoundingClientRect());
+            
+            if (mode === 'move') {
+                return;
+            }
+            
+            if (!isSelecting || !selectionStart) return;
+            
+            // Prevent default behavior to avoid image dragging
+            e.preventDefault();
+            
+            const rect = image.getBoundingClientRect();
+            const imageRect = {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            };
+            
+            // Calculate scale factors
+            const scaleX = imageRect.width / rect.width;
+            const scaleY = imageRect.height / rect.height;
+            
+            // Calculate mouse position relative to the image
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            selectionEnd = {x, y};
+            
+            // Update selection rectangle
+            const startX = Math.min(selectionStart.x, selectionEnd.x);
+            const startY = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            // Remove existing selection rectangle
+            const existingRect = document.querySelector('.current-selection');
+            if (existingRect) {
+                existingRect.remove();
+            }
+            
+            // Create new selection rectangle with correct positioning
+            const displayStartX = (startX / imageRect.width) * rect.width;
+            const displayStartY = (startY / imageRect.height) * rect.height;
+            const displayWidth = (width / imageRect.width) * rect.width;
+            const displayHeight = (height / imageRect.height) * rect.height;
+            
+            const selectionRect = createSelectionRectangle(displayStartX, displayStartY, displayWidth, displayHeight);
+            selectionRect.classList.add('current-selection');
+            
+            logDebug(`MouseMove at client(${e.clientX}, ${e.clientY}), image(${Math.round(x)}, ${Math.round(y)}), selection(${Math.round(startX)}, ${Math.round(startY)}, ${Math.round(width)}, ${Math.round(height)})`);
+        });
+        
+        image.addEventListener('mouseup', (e) => {
+            if (mode === 'move') {
+                return;
+            }
+            
+            if (!isSelecting || !selectionStart || !selectionEnd) return;
+            
+            // Prevent default behavior to avoid image dragging
+            e.preventDefault();
+            
+            const rect = image.getBoundingClientRect();
+            const imageRect = {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+            };
+            
+            // Calculate scale factors
+            const scaleX = imageRect.width / rect.width;
+            const scaleY = imageRect.height / rect.height;
+            
+            // Calculate mouse position relative to the image
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            const startX = Math.min(selectionStart.x, selectionEnd.x);
+            const startY = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            logDebug(`MouseUp at client(${e.clientX}, ${e.clientY}), image(${Math.round(x)}, ${Math.round(y)}), selection(${Math.round(startX)}, ${Math.round(startY)}, ${Math.round(width)}, ${Math.round(height)})`);
+            
+            // Only create region if it's large enough
+            if (width > 10 && height > 10) {
+                const newRegion = {
+                    id: `region_${Date.now()}`,
+                    x: startX,
+                    y: startY,
+                    width: width,
+                    height: height
+                };
+                
+                regions.push(newRegion);
+                
+                // Convert to display coordinates and create permanent rectangle
+                const displayStartX = (startX / imageRect.width) * rect.width;
+                const displayStartY = (startY / imageRect.height) * rect.height;
+                const displayWidth = (width / imageRect.width) * rect.width;
+                const displayHeight = (height / imageRect.height) * rect.height;
+                
+                const regionRect = createSelectionRectangle(displayStartX, displayStartY, displayWidth, displayHeight);
+                regionRect.style.border = '2px solid #10b981';
+                regionRect.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+                regionRect.classList.remove('current-selection');
+                
+                status.textContent = `✅ 已创建选框 ${regions.length}: (${Math.round(startX)}, ${Math.round(startY)}) ${Math.round(width)}x${Math.round(height)}`;
+                status.className = 'result success';
+            }
+            
+            isSelecting = false;
+            selectionStart = null;
+            selectionEnd = null;
+            
+            // Remove current selection rectangle
+            const currentRect = document.querySelector('.current-selection');
+            if (currentRect) {
+                currentRect.remove();
+            }
+        });
+        
+        image.addEventListener('mouseleave', () => {
+            isSelecting = false;
+            selectionStart = null;
+            selectionEnd = null;
+            hideCoordinatesDisplay();
+            
+            // Remove current selection rectangle
+            const currentRect = document.querySelector('.current-selection');
+            if (currentRect) {
+                currentRect.remove();
+            }
+            
+            logDebug('Mouse leave');
+        });
+        
+        // Prevent image dragging
+        image.addEventListener('dragstart', (e) => {
+            e.preventDefault();
+            logDebug('Drag start prevented');
+        });
+        
+        // Initialize
+        loadTestImageBtn.addEventListener('click', loadTestImage);
+        clearRegionsBtn.addEventListener('click', clearRegions);
+        toggleModeBtn.addEventListener('click', toggleMode);
+    </script>
+</body>
+</html>

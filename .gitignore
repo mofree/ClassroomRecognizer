@@ -7,7 +7,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies
 node_modules
+.env
+
+# Build outputs
 dist
 dist-ssr
 *.local
@@ -22,4 +26,19 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Project specific
 face-api/
+public/models/
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+*.png
+*.jpg
+*.jpeg
+uploads/
+temp/
+
+# System files
+Thumbs.db

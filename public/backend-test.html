@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后端服务测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background-color: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>后端服务测试</h1>
+        <p>此页面用于测试后端人脸识别服务是否正常工作。</p>
+        
+        <button id="checkHealthBtn">检查服务状态</button>
+        <button id="getServiceInfoBtn">获取服务信息</button>
+        <br>
+        
+        <label for="imageFile">选择图像文件进行测试：</label>
+        <input type="file" id="imageFile" accept="image/*">
+        <br>
+        
+        <button id="testDetectBtn" disabled>测试人脸检测</button>
+        <button id="clearLogBtn">清空日志</button>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        const logElement = document.getElementById('log');
+        const checkHealthBtn = document.getElementById('checkHealthBtn');
+        const getServiceInfoBtn = document.getElementById('getServiceInfoBtn');
+        const testDetectBtn = document.getElementById('testDetectBtn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const imageFileInput = document.getElementById('imageFile');
+        const statusElement = document.getElementById('status');
+        
+        const API_BASE_URL = 'http://localhost:5001';
+        
+        function log(message) {
+            const timestamp = new Date().toISOString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logElement.innerHTML += logEntry + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(logEntry);
+        }
+        
+        function showStatus(message, type = 'info') {
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+            statusElement.style.display = 'block';
+        }
+        
+        async function checkHealth() {
+            try {
+                log('检查服务健康状态...');
+                const response = await fetch(`${API_BASE_URL}/health`);
+                const data = await response.json();
+                
+                if (data.status === 'healthy') {
+                    log('✓ 服务状态正常');
+                    log(`  模型加载: ${data.model_loaded ? '是' : '否'}`);
+                    showStatus('服务状态正常', 'success');
+                } else {
+                    log('✗ 服务状态异常');
+                    showStatus('服务状态异常', 'error');
+                }
+            } catch (error) {
+                log(`✗ 无法连接到服务: ${error.message}`);
+                showStatus(`无法连接到服务: ${error.message}`, 'error');
+            }
+        }
+        
+        async function getServiceInfo() {
+            try {
+                log('获取服务信息...');
+                const response = await fetch(`${API_BASE_URL}/`);
+                const data = await response.json();
+                
+                log(`服务信息: ${JSON.stringify(data, null, 2)}`);
+                showStatus('服务信息获取成功', 'success');
+            } catch (error) {
+                log(`✗ 获取服务信息失败: ${error.message}`);
+                showStatus(`获取服务信息失败: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testDetection() {
+            const file = imageFileInput.files[0];
+            if (!file) {
+                log('✗ 请选择一个图像文件');
+                showStatus('请选择一个图像文件', 'warning');
+                return;
+            }
+            
+            testDetectBtn.disabled = true;
+            
+            try {
+                log(`开始测试人脸检测: ${file.name}`);
+                
+                const formData = new FormData();
+                formData.append('image', file);
+                
+                log('发送图像到后端...');
+                const startTime = performance.now();
+                const response = await fetch(`${API_BASE_URL}/api/detect`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const endTime = performance.now();
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP ${response.status}`);
+                }
+                
+                const result = await response.json();
+                log(`✓ 检测完成 (耗时: ${(endTime - startTime).toFixed(2)}ms)`);
+                log(`  检测到人脸数: ${result.count}`);
+                
+                if (result.faces && result.faces.length > 0) {
+                    result.faces.forEach((face, index) => {
+                        log(`  人脸 ${index + 1}:`);
+                        log(`    置信度: ${face.confidence.toFixed(4)}`);
+                        log(`    边界框: [${face.bbox.join(', ')}]`);
+                        log(`    关键点数: ${face.landmarks.length}`);
+                    });
+                }
+                
+                showStatus(`检测完成，找到 ${result.count} 个人脸`, 'success');
+            } catch (error) {
+                log(`✗ 检测失败: ${error.message}`);
+                showStatus(`检测失败: ${error.message}`, 'error');
+            } finally {
+                testDetectBtn.disabled = false;
+            }
+        }
+        
+        function clearLog() {
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+        }
+        
+        // Event listeners
+        checkHealthBtn.addEventListener('click', checkHealth);
+        getServiceInfoBtn.addEventListener('click', getServiceInfo);
+        testDetectBtn.addEventListener('click', testDetection);
+        clearLogBtn.addEventListener('click', clearLog);
+        
+        imageFileInput.addEventListener('change', function() {
+            testDetectBtn.disabled = !this.files[0];
+        });
+        
+        // Initial log
+        log('准备就绪，请先检查服务状态');
+    </script>
+</body>
+</html>

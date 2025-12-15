@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>模型完整性检查</title>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.0/dist/ort.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background-color: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .model-info {
+            background-color: #e2e3e5;
+            border: 1px solid #d6d8db;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .file-info {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            padding: 5px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>模型完整性检查</h1>
+        <p>此页面用于检查模型文件的完整性和有效性。</p>
+        
+        <button id="checkFilesBtn">检查模型文件</button>
+        <button id="validateModelsBtn">验证模型加载</button>
+        <button id="clearLogBtn">清空日志</button>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div class="model-info">
+            <h3>模型文件信息</h3>
+            <div class="file-info">
+                <span>检测模型:</span>
+                <span id="detectionFileInfo">未知</span>
+            </div>
+            <div class="file-info">
+                <span>识别模型:</span>
+                <span id="recognitionFileInfo">未知</span>
+            </div>
+        </div>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        const logElement = document.getElementById('log');
+        const checkFilesBtn = document.getElementById('checkFilesBtn');
+        const validateModelsBtn = document.getElementById('validateModelsBtn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const statusElement = document.getElementById('status');
+        const detectionFileInfo = document.getElementById('detectionFileInfo');
+        const recognitionFileInfo = document.getElementById('recognitionFileInfo');
+        
+        function log(message) {
+            const timestamp = new Date().toISOString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logElement.innerHTML += logEntry + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(logEntry);
+        }
+        
+        function showStatus(message, type = 'info') {
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+            statusElement.style.display = 'block';
+        }
+        
+        async function checkModelFiles() {
+            checkFilesBtn.disabled = true;
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+            
+            try {
+                log('开始检查模型文件完整性...');
+                
+                // Check detection model file
+                log('检查检测模型文件: /models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx');
+                try {
+                    const detectionResponse = await fetch('/models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx');
+                    if (detectionResponse.ok) {
+                        const detectionBlob = await detectionResponse.blob();
+                        const detectionSize = detectionBlob.size;
+                        const detectionSizeMB = (detectionSize / (1024 * 1024)).toFixed(2);
+                        detectionFileInfo.textContent = `${detectionSizeMB} MB`;
+                        log(`✓ 检测模型文件存在，大小: ${detectionSizeMB} MB`);
+                    } else {
+                        throw new Error(`HTTP ${detectionResponse.status}: ${detectionResponse.statusText}`);
+                    }
+                } catch (error) {
+                    detectionFileInfo.textContent = '文件不存在或无法访问';
+                    log(`✗ 检测模型文件访问失败: ${error.message}`);
+                }
+                
+                // Check recognition model file
+                log('检查识别模型文件: /models/insightface/onnx/glintr100/glintr100.onnx');
+                try {
+                    const recognitionResponse = await fetch('/models/insightface/onnx/glintr100/glintr100.onnx');
+                    if (recognitionResponse.ok) {
+                        const recognitionBlob = await recognitionResponse.blob();
+                        const recognitionSize = recognitionBlob.size;
+                        const recognitionSizeMB = (recognitionSize / (1024 * 1024)).toFixed(2);
+                        recognitionFileInfo.textContent = `${recognitionSizeMB} MB`;
+                        log(`✓ 识别模型文件存在，大小: ${recognitionSizeMB} MB`);
+                    } else {
+                        throw new Error(`HTTP ${recognitionResponse.status}: ${recognitionResponse.statusText}`);
+                    }
+                } catch (error) {
+                    recognitionFileInfo.textContent = '文件不存在或无法访问';
+                    log(`✗ 识别模型文件访问失败: ${error.message}`);
+                }
+                
+                showStatus('模型文件检查完成', 'info');
+                log('文件检查完成');
+            } catch (error) {
+                log(`✗ 错误: ${error.message}`);
+                showStatus(`文件检查失败: ${error.message}`, 'error');
+            } finally {
+                checkFilesBtn.disabled = false;
+            }
+        }
+        
+        async function validateModelLoading() {
+            validateModelsBtn.disabled = true;
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+            
+            try {
+                log('开始验证模型加载...');
+                
+                // Check for ONNX Runtime
+                if (typeof ort === 'undefined') {
+                    throw new Error('ONNX Runtime Web 未加载');
+                }
+                log(`✓ ONNX Runtime Web 已加载 (版本: ${ort.version || '未知'})`);
+                
+                // Validate detection model with detailed error handling
+                log('验证检测模型加载...');
+                try {
+                    log('尝试创建检测模型会话...');
+                    const startTime = performance.now();
+                    
+                    // Try with error handling for specific error codes
+                    try {
+                        const session = await ort.InferenceSession.create('/models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx');
+                        const endTime = performance.now();
+                        log(`✓ 检测模型加载成功 (耗时: ${(endTime - startTime).toFixed(2)}ms)`);
+                        log(`  输入: ${JSON.stringify(session.inputNames)}`);
+                        log(`  输出: ${JSON.stringify(session.outputNames)}`);
+                    } catch (error) {
+                        log(`✗ 检测模型加载失败: ${error.message}`);
+                        log(`  错误代码: ${error.code || 'N/A'}`);
+                        log(`  错误名称: ${error.name || 'N/A'}`);
+                        
+                        // Handle specific error codes
+                        if (error.code === 7) {
+                            log('  错误代码 7 表示 INVALID_PROTOBUF - 模型文件可能损坏或格式不正确');
+                            log('  建议: 重新下载模型文件或检查文件完整性');
+                        }
+                    }
+                } catch (detectionError) {
+                    log(`✗ 检测模型验证失败: ${detectionError.message}`);
+                }
+                
+                // Validate recognition model
+                log('验证识别模型加载...');
+                try {
+                    log('尝试创建识别模型会话...');
+                    const startTime = performance.now();
+                    const session = await ort.InferenceSession.create('/models/insightface/onnx/glintr100/glintr100.onnx');
+                    const endTime = performance.now();
+                    log(`✓ 识别模型加载成功 (耗时: ${(endTime - startTime).toFixed(2)}ms)`);
+                    log(`  输入: ${JSON.stringify(session.inputNames)}`);
+                    log(`  输出: ${JSON.stringify(session.outputNames)}`);
+                } catch (recognitionError) {
+                    log(`✗ 识别模型加载失败: ${recognitionError.message}`);
+                    log(`  错误代码: ${recognitionError.code || 'N/A'}`);
+                }
+                
+                showStatus('模型加载验证完成', 'info');
+                log('模型验证完成');
+            } catch (error) {
+                log(`✗ 错误: ${error.message}`);
+                showStatus(`模型验证失败: ${error.message}`, 'error');
+            } finally {
+                validateModelsBtn.disabled = false;
+            }
+        }
+        
+        function clearLog() {
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+            detectionFileInfo.textContent = '未知';
+            recognitionFileInfo.textContent = '未知';
+        }
+        
+        checkFilesBtn.addEventListener('click', checkModelFiles);
+        validateModelsBtn.addEventListener('click', validateModelLoading);
+        clearLogBtn.addEventListener('click', clearLog);
+        
+        // Initial log
+        log('准备就绪，点击相应按钮开始检查');
+    </script>
+</body>
+</html>

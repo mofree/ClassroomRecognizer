@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>检测模型调试</title>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.0/dist/ort.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background-color: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .model-info {
+            background-color: #e2e3e5;
+            border: 1px solid #d6d8db;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>检测模型调试</h1>
+        <p>此页面专门用于调试人脸检测模型加载问题。</p>
+        
+        <button id="loadModelBtn">加载检测模型</button>
+        <button id="testModelBtn" disabled>测试模型推理</button>
+        <button id="clearLogBtn">清空日志</button>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div class="model-info">
+            <h3>模型信息</h3>
+            <p><strong>模型路径:</strong> /models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx</p>
+            <p><strong>预期大小:</strong> 约 16MB</p>
+            <p><strong>模型类型:</strong> SCRFD (Sample and Computation Redistribution Face Detector)</p>
+        </div>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        const logElement = document.getElementById('log');
+        const loadModelBtn = document.getElementById('loadModelBtn');
+        const testModelBtn = document.getElementById('testModelBtn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const statusElement = document.getElementById('status');
+        
+        let detectionSession = null;
+        
+        function log(message) {
+            const timestamp = new Date().toISOString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logElement.innerHTML += logEntry + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(logEntry);
+        }
+        
+        function showStatus(message, type = 'info') {
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+            statusElement.style.display = 'block';
+        }
+        
+        async function loadDetectionModel() {
+            loadModelBtn.disabled = true;
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+            
+            try {
+                log('开始加载人脸检测模型...');
+                
+                // Check for ONNX Runtime
+                if (typeof ort === 'undefined') {
+                    throw new Error('ONNX Runtime Web 未加载');
+                }
+                log(`✓ ONNX Runtime Web 已加载 (版本: ${ort.version || '未知'})`);
+                
+                // Log WebAssembly support
+                log(`WebAssembly 支持: ${typeof WebAssembly === 'object' ? '是' : '否'}`);
+                
+                log('正在创建检测模型会话...');
+                const startTime = performance.now();
+                
+                // Try different approaches
+                try {
+                    log('尝试默认配置加载...');
+                    detectionSession = await ort.InferenceSession.create('/models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx');
+                } catch (error) {
+                    log(`默认配置加载失败: ${error.message}`);
+                    
+                    // Try with WASM execution provider
+                    log('尝试使用 WASM 执行提供程序...');
+                    try {
+                        detectionSession = await ort.InferenceSession.create(
+                            '/models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx',
+                            { executionProviders: ['wasm'] }
+                        );
+                    } catch (wasmError) {
+                        log(`WASM 配置加载失败: ${wasmError.message}`);
+                        
+                        // Try with WebGL execution provider
+                        log('尝试使用 WebGL 执行提供程序...');
+                        try {
+                            detectionSession = await ort.InferenceSession.create(
+                                '/models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx',
+                                { executionProviders: ['webgl'] }
+                        );
+                        } catch (webglError) {
+                            log(`WebGL 配置加载失败: ${webglError.message}`);
+                            throw webglError;
+                        }
+                    }
+                }
+                
+                const endTime = performance.now();
+                
+                log(`✓ 人脸检测模型会话创建成功 (耗时: ${(endTime - startTime).toFixed(2)}ms)`);
+                
+                // Log model info
+                if (detectionSession) {
+                    log(`  输入名称: ${JSON.stringify(detectionSession.inputNames)}`);
+                    log(`  输出名称: ${JSON.stringify(detectionSession.outputNames)}`);
+                    
+                    // Enable test button
+                    testModelBtn.disabled = false;
+                    showStatus('人脸检测模型加载成功！', 'success');
+                }
+                
+                log('模型加载完成');
+            } catch (error) {
+                log(`✗ 错误: ${error.message}`);
+                showStatus(`人脸检测模型加载失败: ${error.message}`, 'error');
+                console.error('加载失败:', error);
+                
+                // Disable test button
+                testModelBtn.disabled = true;
+            } finally {
+                loadModelBtn.disabled = false;
+            }
+        }
+        
+        async function testModelInference() {
+            if (!detectionSession) {
+                log('✗ 模型未加载');
+                showStatus('请先加载模型', 'error');
+                return;
+            }
+            
+            testModelBtn.disabled = true;
+            
+            try {
+                log('开始测试模型推理...');
+                
+                // Create a dummy input tensor (1x3x640x640)
+                const dummyInput = new Float32Array(1 * 3 * 640 * 640).fill(0.5);
+                const inputTensor = new ort.Tensor('float32', dummyInput, [1, 3, 640, 640]);
+                
+                log(`创建输入张量: ${JSON.stringify(inputTensor.dims)}`);
+                
+                // Run inference
+                log('执行推理...');
+                const startTime = performance.now();
+                const feeds = {};
+                feeds[detectionSession.inputNames[0]] = inputTensor;
+                
+                const results = await detectionSession.run(feeds);
+                const endTime = performance.now();
+                
+                log(`✓ 推理成功 (耗时: ${(endTime - startTime).toFixed(2)}ms)`);
+                log(`  输出数量: ${Object.keys(results).length}`);
+                
+                // Log output info
+                for (const [name, tensor] of Object.entries(results)) {
+                    log(`  输出 "${name}": ${JSON.stringify(tensor.dims)}`);
+                }
+                
+                showStatus('模型推理测试成功！', 'success');
+                log('推理测试完成');
+            } catch (error) {
+                log(`✗ 推理错误: ${error.message}`);
+                showStatus(`模型推理失败: ${error.message}`, 'error');
+                console.error('推理失败:', error);
+            } finally {
+                testModelBtn.disabled = false;
+            }
+        }
+        
+        function clearLog() {
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+        }
+        
+        loadModelBtn.addEventListener('click', loadDetectionModel);
+        testModelBtn.addEventListener('click', testModelInference);
+        clearLogBtn.addEventListener('click', clearLog);
+        
+        // Initial log
+        log('准备就绪，点击"加载检测模型"按钮开始测试');
+    </script>
+</body>
+</html>

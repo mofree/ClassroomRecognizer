@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ONNX Runtime 版本测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background-color: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ONNX Runtime 版本测试</h1>
+        <p>此页面用于测试不同版本的 ONNX Runtime。</p>
+        
+        <button id="testORT114Btn">测试 ORT 1.14.0</button>
+        <button id="testORT115Btn">测试 ORT 1.15.0</button>
+        <button id="testORT116Btn">测试 ORT 1.16.0</button>
+        <button id="clearLogBtn">清空日志</button>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        const logElement = document.getElementById('log');
+        const testORT114Btn = document.getElementById('testORT114Btn');
+        const testORT115Btn = document.getElementById('testORT115Btn');
+        const testORT116Btn = document.getElementById('testORT116Btn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const statusElement = document.getElementById('status');
+        
+        function log(message) {
+            const timestamp = new Date().toISOString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logElement.innerHTML += logEntry + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(logEntry);
+        }
+        
+        function showStatus(message, type = 'info') {
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+            statusElement.style.display = 'block';
+        }
+        
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                // Remove any existing ort script
+                const existingScript = document.querySelector('script[src*="onnxruntime-web"]');
+                if (existingScript) {
+                    existingScript.remove();
+                }
+                
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+        
+        async function testORTVersion(version, cdnUrl) {
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+            
+            try {
+                log(`正在加载 ONNX Runtime Web ${version}...`);
+                await loadScript(cdnUrl);
+                log('✓ ONNX Runtime Web 加载成功');
+                
+                // Wait a bit for the library to initialize
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Check if ort is available
+                if (typeof ort === 'undefined') {
+                    throw new Error('ONNX Runtime Web 未正确初始化');
+                }
+                
+                log(`✓ ONNX Runtime Web ${version} 已就绪`);
+                log(`  版本信息: ${ort.version || '未知'}`);
+                
+                // Test detection model
+                log('正在测试人脸检测模型...');
+                const startTime = performance.now();
+                const session = await ort.InferenceSession.create('/models/insightface/onnx/scrfd_10g_bnkps/scrfd_10g_bnkps.onnx');
+                const endTime = performance.now();
+                
+                log(`✓ 人脸检测模型会话创建成功 (耗时: ${(endTime - startTime).toFixed(2)}ms)`);
+                log(`  输入名称: ${JSON.stringify(session.inputNames)}`);
+                log(`  输出名称: ${JSON.stringify(session.outputNames)}`);
+                
+                showStatus(`ONNX Runtime ${version} 测试成功！`, 'success');
+                log('测试完成');
+            } catch (error) {
+                log(`✗ 错误: ${error.message}`);
+                showStatus(`测试失败: ${error.message}`, 'error');
+                console.error('测试失败:', error);
+            }
+        }
+        
+        function clearLog() {
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+        }
+        
+        testORT114Btn.addEventListener('click', () => {
+            testORT114Btn.disabled = true;
+            testORT115Btn.disabled = true;
+            testORT116Btn.disabled = true;
+            testORTVersion('1.14.0', 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js').finally(() => {
+                testORT114Btn.disabled = false;
+                testORT115Btn.disabled = false;
+                testORT116Btn.disabled = false;
+            });
+        });
+        
+        testORT115Btn.addEventListener('click', () => {
+            testORT114Btn.disabled = true;
+            testORT115Btn.disabled = true;
+            testORT116Btn.disabled = true;
+            testORTVersion('1.15.0', 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.15.0/dist/ort.min.js').finally(() => {
+                testORT114Btn.disabled = false;
+                testORT115Btn.disabled = false;
+                testORT116Btn.disabled = false;
+            });
+        });
+        
+        testORT116Btn.addEventListener('click', () => {
+            testORT114Btn.disabled = true;
+            testORT115Btn.disabled = true;
+            testORT116Btn.disabled = true;
+            testORTVersion('1.16.0', 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.0/dist/ort.min.js').finally(() => {
+                testORT114Btn.disabled = false;
+                testORT115Btn.disabled = false;
+                testORT116Btn.disabled = false;
+            });
+        });
+        
+        clearLogBtn.addEventListener('click', clearLog);
+        
+        // Initial log
+        log('准备就绪，点击相应按钮测试不同版本的 ONNX Runtime');
+    </script>
+</body>
+</html>

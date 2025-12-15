@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manual Region Selection Test</title>
+    <script src="/face-api.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1e293b;
+            color: #f8fafc;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-section {
+            background-color: #334155;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        button {
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #2563eb;
+        }
+        button:disabled {
+            background-color: #64748b;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #475569;
+        }
+        .success {
+            background-color: #16a34a;
+        }
+        .error {
+            background-color: #dc2626;
+        }
+        .warning {
+            background-color: #ca8a04;
+        }
+        canvas {
+            border: 1px solid #64748b;
+            margin-top: 10px;
+            max-width: 100%;
+        }
+        .region-info {
+            position: absolute;
+            background-color: rgba(16, 185, 129, 0.8);
+            color: white;
+            padding: 5px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+        .instructions {
+            background-color: #334155;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .instruction-steps {
+            list-style-type: decimal;
+            padding-left: 20px;
+        }
+        .instruction-steps li {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>手动区域选择测试</h1>
+        
+        <div class="instructions">
+            <h3>使用说明：</h3>
+            <ol class="instruction-steps">
+                <li>点击下方"启用区域选择"按钮</li>
+                <li>在视频画面上按住鼠标左键并拖拽来创建区域</li>
+                <li>系统将在您创建的区域内持续检测人脸</li>
+                <li>区域检测结果会显示在右上角的信息框中</li>
+                <li>点击区域信息框中的"×"可以删除区域</li>
+            </ol>
+        </div>
+        
+        <div class="test-section">
+            <h2>视频播放与区域选择</h2>
+            <div>
+                <button id="loadModelBtn">1. 加载模型</button>
+                <button id="startCameraBtn" disabled>2. 启动摄像头</button>
+                <button id="enableSelectionBtn" disabled>3. 启用区域选择</button>
+                <button id="disableSelectionBtn" disabled>禁用区域选择</button>
+            </div>
+            <div id="modelStatus" class="result">未开始</div>
+            
+            <div style="position: relative; margin-top: 20px;">
+                <video id="video" width="800" height="600" autoplay muted style="border: 1px solid #64748b;"></video>
+                <canvas id="canvas" width="800" height="600" style="position: absolute; top: 0; left: 0;"></canvas>
+                <div id="regionsInfo" style="position: absolute; top: 10px; right: 10px;"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>区域检测参数</h2>
+            <div>
+                <label>检测置信度阈值: <span id="confidenceValue">0.05</span></label>
+                <input type="range" id="confidenceSlider" min="0.01" max="0.5" step="0.01" value="0.05">
+            </div>
+            <div style="margin-top: 10px;">
+                <label>网络输入尺寸: <span id="networkSizeValue">800</span>px</label>
+                <input type="range" id="networkSizeSlider" min="224" max="800" step="32" value="800">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let video = document.getElementById('video');
+        let canvas = document.getElementById('canvas');
+        let ctx = canvas.getContext('2d');
+        let isSelecting = false;
+        let selectionStart = null;
+        let selectionEnd = null;
+        let manualRegions = [];
+        let regionTracking = {};
+        let isSelectionEnabled = false;
+        let detectionParams = {
+            minConfidence: 0.05,
+            networkSize: 800
+        };
+        
+        // DOM Elements
+        const modelStatus = document.getElementById('modelStatus');
+        const loadModelBtn = document.getElementById('loadModelBtn');
+        const startCameraBtn = document.getElementById('startCameraBtn');
+        const enableSelectionBtn = document.getElementById('enableSelectionBtn');
+        const disableSelectionBtn = document.getElementById('disableSelectionBtn');
+        const confidenceSlider = document.getElementById('confidenceSlider');
+        const confidenceValue = document.getElementById('confidenceValue');
+        const networkSizeSlider = document.getElementById('networkSizeSlider');
+        const networkSizeValue = document.getElementById('networkSizeValue');
+        const regionsInfo = document.getElementById('regionsInfo');
+        
+        // Update parameter values when sliders change
+        confidenceSlider.addEventListener('input', () => {
+            detectionParams.minConfidence = parseFloat(confidenceSlider.value);
+            confidenceValue.textContent = detectionParams.minConfidence.toFixed(2);
+        });
+        
+        networkSizeSlider.addEventListener('input', () => {
+            detectionParams.networkSize = parseInt(networkSizeSlider.value);
+            networkSizeValue.textContent = detectionParams.networkSize;
+        });
+        
+        // Load models
+        async function loadModels() {
+            try {
+                modelStatus.textContent = '正在加载模型...';
+                modelStatus.className = 'result';
+                
+                await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
+                await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
+                await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+                
+                modelStatus.textContent = '✅ 模型加载成功!';
+                modelStatus.className = 'result success';
+                loadModelBtn.disabled = true;
+                startCameraBtn.disabled = false;
+            } catch (error) {
+                modelStatus.textContent = `❌ 模型加载失败: ${error.message}`;
+                modelStatus.className = 'result error';
+                console.error(error);
+            }
+        }
+        
+        // Start camera
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    enableSelectionBtn.disabled = false;
+                    processVideo();
+                };
+            } catch (error) {
+                modelStatus.textContent = `❌ 摄像头启动失败: ${error.message}`;
+                modelStatus.className = 'result error';
+                console.error(error);
+            }
+        }
+        
+        // Enable region selection
+        function enableSelection() {
+            isSelectionEnabled = true;
+            enableSelectionBtn.disabled = true;
+            disableSelectionBtn.disabled = false;
+            modelStatus.textContent = '✅ 区域选择已启用，可以在视频上拖拽创建区域';
+            modelStatus.className = 'result success';
+        }
+        
+        // Disable region selection
+        function disableSelection() {
+            isSelectionEnabled = false;
+            enableSelectionBtn.disabled = false;
+            disableSelectionBtn.disabled = true;
+            modelStatus.textContent = '区域选择已禁用';
+            modelStatus.className = 'result';
+        }
+        
+        // Process video frame
+        async function processVideo() {
+            if (video.paused || video.ended) return;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw video frame
+            ctx.drawImage(video, 0, 0);
+            
+            // Detect faces in manual regions
+            for (const region of manualRegions) {
+                // Extract region from video frame
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                if (!tempCtx) continue;
+                
+                tempCanvas.width = region.width;
+                tempCanvas.height = region.height;
+                
+                tempCtx.drawImage(
+                    video,
+                    region.x, region.y, region.width, region.height,
+                    0, 0, region.width, region.height
+                );
+                
+                // Detect faces in the region
+                try {
+                    const regionOptions = new faceapi.SsdMobilenetv1Options({
+                        minConfidence: detectionParams.minConfidence,
+                        inputSize: detectionParams.networkSize
+                    });
+                    
+                    const regionDetections = await faceapi
+                        .detectAllFaces(tempCanvas, regionOptions)
+                        .withFaceLandmarks()
+                        .withFaceDescriptors();
+                    
+                    // Adjust coordinates back to full frame
+                    const adjustedDetections = regionDetections.map(detection => ({
+                        ...detection,
+                        detection: {
+                            ...detection.detection,
+                            box: {
+                                ...detection.detection.box,
+                                x: detection.detection.box.x + region.x,
+                                y: detection.detection.box.y + region.y
+                            }
+                        }
+                    }));
+                    
+                    // Draw detections
+                    adjustedDetections.forEach(detection => {
+                        const box = detection.detection.box;
+                        
+                        // Draw bounding box
+                        ctx.strokeStyle = '#10b981';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(box.x, box.y, box.width, box.height);
+                        
+                        // Draw landmarks
+                        if (detection.landmarks) {
+                            ctx.fillStyle = '#10b981';
+                            const positions = detection.landmarks.positions;
+                            positions.forEach(pos => {
+                                ctx.beginPath();
+                                ctx.arc(pos.x, pos.y, 2, 0, 2 * Math.PI);
+                                ctx.fill();
+                            });
+                        }
+                    });
+                    
+                    // Track region results
+                    if (!regionTracking[region.id]) {
+                        regionTracking[region.id] = [];
+                    }
+                    
+                    // Add current detections to tracking
+                    regionTracking[region.id].push({
+                        timestamp: Date.now(),
+                        detections: adjustedDetections
+                    });
+                    
+                    // Keep only last 5 minutes of data
+                    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+                    regionTracking[region.id] = regionTracking[region.id].filter(
+                        record => record.timestamp > fiveMinutesAgo
+                    );
+                } catch (regionError) {
+                    console.warn(`Region detection failed for region ${region.id}:`, regionError);
+                }
+            }
+            
+            // Draw manual selection rectangle if selecting
+            if (isSelecting && selectionStart && selectionEnd) {
+                const startX = Math.min(selectionStart.x, selectionEnd.x);
+                const startY = Math.min(selectionStart.y, selectionEnd.y);
+                const width = Math.abs(selectionEnd.x - selectionStart.x);
+                const height = Math.abs(selectionEnd.y - selectionStart.y);
+                
+                ctx.strokeStyle = '#3b82f6';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(startX, startY, width, height);
+                ctx.setLineDash([]);
+            }
+            
+            // Draw manual regions
+            manualRegions.forEach((region, index) => {
+                ctx.strokeStyle = '#10b981';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(region.x, region.y, region.width, region.height);
+                
+                // Draw region label
+                ctx.fillStyle = '#10b981';
+                ctx.font = 'bold 14px Arial';
+                ctx.fillText(`区域 ${index + 1}`, region.x + 5, region.y + 15);
+            });
+            
+            // Update regions info
+            updateRegionsInfo();
+            
+            // Continue processing
+            requestAnimationFrame(processVideo);
+        }
+        
+        // Update regions info display
+        function updateRegionsInfo() {
+            if (manualRegions.length === 0) {
+                regionsInfo.innerHTML = '';
+                return;
+            }
+            
+            let infoHTML = '<div style="background-color: rgba(51, 65, 85, 0.9); padding: 10px; border-radius: 8px;">';
+            infoHTML += '<div style="color: #cbd5e1; font-weight: bold; margin-bottom: 5px;">手动区域检测结果:</div>';
+            
+            manualRegions.forEach((region, index) => {
+                const regionRecords = regionTracking[region.id];
+                let detectionInfo = '检测中...';
+                
+                if (regionRecords && regionRecords.length > 0) {
+                    // Get latest detection
+                    const latestRecord = regionRecords[regionRecords.length - 1];
+                    if (latestRecord.detections.length > 0) {
+                        detectionInfo = `检测到 ${latestRecord.detections.length} 个人脸`;
+                    } else {
+                        detectionInfo = '未检测到人脸';
+                    }
+                }
+                
+                infoHTML += `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; padding: 5px; background-color: rgba(71, 85, 105, 0.5); border-radius: 4px;">
+                        <span style="color: #e2e8f0;">区域 ${index + 1}: ${detectionInfo}</span>
+                        <button onclick="removeRegion(${index})" style="background-color: #ef4444; color: white; border: none; border-radius: 4px; padding: 2px 6px; cursor: pointer;">×</button>
+                    </div>
+                `;
+            });
+            
+            infoHTML += '</div>';
+            regionsInfo.innerHTML = infoHTML;
+        }
+        
+        // Remove region
+        function removeRegion(index) {
+            if (index >= 0 && index < manualRegions.length) {
+                const region = manualRegions[index];
+                manualRegions.splice(index, 1);
+                delete regionTracking[region.id];
+                updateRegionsInfo();
+            }
+        }
+        
+        // Mouse event handlers
+        canvas.addEventListener('mousedown', (e) => {
+            if (!isSelectionEnabled) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            isSelecting = true;
+            selectionStart = {x, y};
+            selectionEnd = {x, y};
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isSelecting || !selectionStart) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            selectionEnd = {x, y};
+        });
+        
+        canvas.addEventListener('mouseup', () => {
+            if (!isSelecting || !selectionStart || !selectionEnd) return;
+            
+            const startX = Math.min(selectionStart.x, selectionEnd.x);
+            const startY = Math.min(selectionStart.y, selectionEnd.y);
+            const width = Math.abs(selectionEnd.x - selectionStart.x);
+            const height = Math.abs(selectionEnd.y - selectionStart.y);
+            
+            // Only create region if it's large enough
+            if (width > 20 && height > 20) {
+                const newRegion = {
+                    id: `region_${Date.now()}`,
+                    x: startX,
+                    y: startY,
+                    width: width,
+                    height: height
+                };
+                
+                manualRegions.push(newRegion);
+                updateRegionsInfo();
+            }
+            
+            isSelecting = false;
+            selectionStart = null;
+            selectionEnd = null;
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            isSelecting = false;
+            selectionStart = null;
+            selectionEnd = null;
+        });
+        
+        // Make removeRegion function available globally
+        window.removeRegion = removeRegion;
+        
+        // Initialize
+        loadModelBtn.addEventListener('click', loadModels);
+        startCameraBtn.addEventListener('click', startCamera);
+        enableSelectionBtn.addEventListener('click', enableSelection);
+        disableSelectionBtn.addEventListener('click', disableSelection);
+    </script>
+</body>
+</html>

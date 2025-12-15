@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>前后端集成测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background-color: #000;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+        }
+        .param-controls {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        .param-control {
+            margin: 10px 0;
+        }
+        .param-control label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .param-control input {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>前后端集成测试</h1>
+        <p>此页面用于测试完整的前后端集成功能。</p>
+        
+        <div class="param-controls">
+            <h3>检测参数设置</h3>
+            <div class="param-control">
+                <label for="minConfidence">最小置信度 (0.01-1.0):</label>
+                <input type="range" id="minConfidence" min="0.01" max="1" step="0.01" value="0.5">
+                <span id="minConfidenceValue">0.5</span>
+            </div>
+            
+            <div class="param-control">
+                <label for="networkSize">网络输入尺寸 (320-1024):</label>
+                <input type="range" id="networkSize" min="320" max="1024" step="32" value="640">
+                <span id="networkSizeValue">640</span>
+            </div>
+            
+            <div class="param-control">
+                <label for="minFaceSize">最小人脸尺寸 (10-100):</label>
+                <input type="range" id="minFaceSize" min="10" max="100" step="1" value="20">
+                <span id="minFaceSizeValue">20</span>
+            </div>
+            
+            <button id="updateParamsBtn">更新参数</button>
+        </div>
+        
+        <button id="checkHealthBtn">检查服务状态</button>
+        <button id="getCurrentParamsBtn">获取当前参数</button>
+        <button id="resetParamsBtn">重置参数</button>
+        <br>
+        
+        <label for="imageFile">选择图像文件进行测试：</label>
+        <input type="file" id="imageFile" accept="image/*">
+        <br>
+        
+        <button id="testDetectBtn" disabled>测试人脸检测</button>
+        <button id="clearLogBtn">清空日志</button>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        const logElement = document.getElementById('log');
+        const checkHealthBtn = document.getElementById('checkHealthBtn');
+        const getCurrentParamsBtn = document.getElementById('getCurrentParamsBtn');
+        const resetParamsBtn = document.getElementById('resetParamsBtn');
+        const updateParamsBtn = document.getElementById('updateParamsBtn');
+        const testDetectBtn = document.getElementById('testDetectBtn');
+        const clearLogBtn = document.getElementById('clearLogBtn');
+        const imageFileInput = document.getElementById('imageFile');
+        const statusElement = document.getElementById('status');
+        
+        const API_BASE_URL = 'http://localhost:5001';
+        
+        // 参数控件
+        const minConfidenceSlider = document.getElementById('minConfidence');
+        const networkSizeSlider = document.getElementById('networkSize');
+        const minFaceSizeSlider = document.getElementById('minFaceSize');
+        const minConfidenceValue = document.getElementById('minConfidenceValue');
+        const networkSizeValue = document.getElementById('networkSizeValue');
+        const minFaceSizeValue = document.getElementById('minFaceSizeValue');
+        
+        // 更新参数显示值
+        minConfidenceSlider.addEventListener('input', () => {
+            minConfidenceValue.textContent = minConfidenceSlider.value;
+        });
+        
+        networkSizeSlider.addEventListener('input', () => {
+            networkSizeValue.textContent = networkSizeSlider.value;
+        });
+        
+        minFaceSizeSlider.addEventListener('input', () => {
+            minFaceSizeValue.textContent = minFaceSizeSlider.value;
+        });
+        
+        function log(message) {
+            const timestamp = new Date().toISOString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logElement.innerHTML += logEntry + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(logEntry);
+        }
+        
+        function showStatus(message, type = 'info') {
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+            statusElement.style.display = 'block';
+        }
+        
+        async function checkHealth() {
+            try {
+                log('检查服务健康状态...');
+                const response = await fetch(`${API_BASE_URL}/health`);
+                const data = await response.json();
+                
+                if (data.status === 'healthy') {
+                    log('✓ 服务状态正常');
+                    log(`  模型加载: ${data.model_loaded ? '是' : '否'}`);
+                    if (data.params) {
+                        log(`  当前参数: ${JSON.stringify(data.params)}`);
+                    }
+                    showStatus('服务状态正常', 'success');
+                } else {
+                    log('✗ 服务状态异常');
+                    showStatus('服务状态异常', 'error');
+                }
+            } catch (error) {
+                log(`✗ 无法连接到服务: ${error.message}`);
+                showStatus(`无法连接到服务: ${error.message}`, 'error');
+            }
+        }
+        
+        async function getCurrentParams() {
+            try {
+                log('获取当前检测参数...');
+                const response = await fetch(`${API_BASE_URL}/api/params`);
+                const data = await response.json();
+                
+                log(`响应状态: ${response.status} ${response.statusText}`);
+                log(`响应数据: ${JSON.stringify(data, null, 2)}`);
+                
+                if (data.success) {
+                    log(`✓ 当前参数: ${JSON.stringify(data.params, null, 2)}`);
+                    showStatus('参数获取成功', 'success');
+                    
+                    // 更新UI控件
+                    if (data.params.min_confidence) {
+                        minConfidenceSlider.value = data.params.min_confidence;
+                        minConfidenceValue.textContent = data.params.min_confidence;
+                    }
+                    if (data.params.network_size) {
+                        networkSizeSlider.value = data.params.network_size;
+                        networkSizeValue.textContent = data.params.network_size;
+                    }
+                    if (data.params.min_face_size) {
+                        minFaceSizeSlider.value = data.params.min_face_size;
+                        minFaceSizeValue.textContent = data.params.min_face_size;
+                    }
+                } else {
+                    log(`✗ 获取参数失败: ${data.error}`);
+                    showStatus(`获取参数失败: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                log(`✗ 获取参数失败: ${error.message}`);
+                showStatus(`获取参数失败: ${error.message}`, 'error');
+            }
+        }
+        
+        async function updateParams() {
+            try {
+                const params = {
+                    min_confidence: parseFloat(minConfidenceSlider.value),
+                    network_size: parseInt(networkSizeSlider.value),
+                    min_face_size: parseInt(minFaceSizeSlider.value)
+                };
+                
+                log(`更新检测参数: ${JSON.stringify(params, null, 2)}`);
+                
+                const response = await fetch(`${API_BASE_URL}/api/params`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(params)
+                });
+                
+                const data = await response.json();
+                log(`响应状态: ${response.status} ${response.statusText}`);
+                log(`响应数据: ${JSON.stringify(data, null, 2)}`);
+                
+                if (data.success) {
+                    log('✓ 参数更新成功');
+                    log(`  新参数: ${JSON.stringify(data.params, null, 2)}`);
+                    if (data.updated_fields && data.updated_fields.length > 0) {
+                        log(`  更新字段: ${data.updated_fields.join(', ')}`);
+                    }
+                    showStatus('参数更新成功', 'success');
+                } else {
+                    log(`✗ 参数更新失败: ${data.error}`);
+                    if (data.details) {
+                        log(`  详细信息: ${JSON.stringify(data.details)}`);
+                    }
+                    showStatus(`参数更新失败: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                log(`✗ 参数更新失败: ${error.message}`);
+                showStatus(`参数更新失败: ${error.message}`, 'error');
+            }
+        }
+        
+        async function resetParams() {
+            try {
+                log('重置参数到默认值...');
+                
+                // 重置为默认参数
+                const defaultParams = {
+                    min_confidence: 0.5,
+                    network_size: 640,
+                    min_face_size: 20
+                };
+                
+                const response = await fetch(`${API_BASE_URL}/api/params`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(defaultParams)
+                });
+                
+                const data = await response.json();
+                log(`响应状态: ${response.status} ${response.statusText}`);
+                log(`响应数据: ${JSON.stringify(data, null, 2)}`);
+                
+                if (data.success) {
+                    log('✓ 参数重置成功');
+                    log(`  新参数: ${JSON.stringify(data.params, null, 2)}`);
+                    
+                    // 更新UI控件
+                    minConfidenceSlider.value = data.params.min_confidence;
+                    minConfidenceValue.textContent = data.params.min_confidence;
+                    networkSizeSlider.value = data.params.network_size;
+                    networkSizeValue.textContent = data.params.network_size;
+                    minFaceSizeSlider.value = data.params.min_face_size;
+                    minFaceSizeValue.textContent = data.params.min_face_size;
+                    
+                    showStatus('参数重置成功', 'success');
+                } else {
+                    log(`✗ 参数重置失败: ${data.error}`);
+                    if (data.details) {
+                        log(`  详细信息: ${JSON.stringify(data.details)}`);
+                    }
+                    showStatus(`参数重置失败: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                log(`✗ 参数重置失败: ${error.message}`);
+                showStatus(`参数重置失败: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testDetection() {
+            const file = imageFileInput.files[0];
+            if (!file) {
+                showStatus('请选择一个图像文件', 'error');
+                return;
+            }
+
+            try {
+                log(`开始检测图像: ${file.name}`);
+                showStatus('正在检测...', 'info');
+                
+                const formData = new FormData();
+                formData.append('image', file);
+                
+                const response = await fetch(`${API_BASE_URL}/api/detect`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                log(`响应状态: ${response.status} ${response.statusText}`);
+                log(`响应数据: ${JSON.stringify(data, null, 2)}`);
+                
+                if (data.success) {
+                    log(`✓ 检测完成，共检测到 ${data.count} 个人脸`);
+                    
+                    // 显示检测统计信息
+                    const statsContainer = document.getElementById('detection-stats');
+                    const confidenceStats = document.getElementById('confidence-stats');
+                    
+                    if (statsContainer && confidenceStats) {
+                        statsContainer.innerHTML = `
+                            <div style="background: #1e293b; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                                <h4 style="margin: 0 0 10px 0; color: white;">检测统计</h4>
+                                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                                    <div style="background: #334155; padding: 8px; border-radius: 4px;">
+                                        <div style="color: #94a3b8; font-size: 12px;">检测人数</div>
+                                        <div style="color: white; font-size: 20px; font-weight: bold;">${data.count}</div>
+                                    </div>
+                                    <div style="background: #334155; padding: 8px; border-radius: 4px;">
+                                        <div style="color: #94a3b8; font-size: 12px;">使用参数</div>
+                                        <div style="color: white; font-size: 14px;">置信度≥${(data.params_used?.min_confidence || 0.5) * 100}%</div>
+                                    </div>
+                                    <div style="background: #334155; padding: 8px; border-radius: 4px;">
+                                        <div style="color: #94a3b8; font-size: 12px;">网络尺寸</div>
+                                        <div style="color: white; font-size: 14px;">${data.params_used?.network_size || 640}px</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        
+                        // 计算并显示置信度统计
+                        if (data.faces && data.faces.length > 0) {
+                            const confidences = data.faces.map(face => face.confidence);
+                            const avgConfidence = confidences.reduce((sum, c) => sum + c, 0) / confidences.length;
+                            const minConfidence = Math.min(...confidences);
+                            const maxConfidence = Math.max(...confidences);
+                            
+                            confidenceStats.innerHTML = `
+                                <div style="background: #1e293b; padding: 10px; border-radius: 5px;">
+                                    <h4 style="margin: 0 0 10px 0; color: white;">置信度统计</h4>
+                                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                                        <div style="background: #334155; padding: 8px; border-radius: 4px;">
+                                            <div style="color: #94a3b8; font-size: 12px;">平均置信度</div>
+                                            <div style="color: #10b981; font-size: 18px; font-weight: bold;">${(avgConfidence * 100).toFixed(1)}%</div>
+                                        </div>
+                                        <div style="background: #334155; padding: 8px; border-radius: 4px;">
+                                            <div style="color: #94a3b8; font-size: 12px;">最低置信度</div>
+                                            <div style="color: #ef4444; font-size: 18px; font-weight: bold;">${(minConfidence * 100).toFixed(1)}%</div>
+                                        </div>
+                                        <div style="background: #334155; padding: 8px; border-radius: 4px;">
+                                            <div style="color: #94a3b8; font-size: 12px;">最高置信度</div>
+                                            <div style="color: #3b82f6; font-size: 18px; font-weight: bold;">${(maxConfidence * 100).toFixed(1)}%</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }
+                    
+                    // 绘制检测结果
+                    drawDetectionResults(data.faces, file);
+                    
+                    showStatus(`检测完成，共检测到 ${data.count} 个人脸`, 'success');
+                } else {
+                    log(`✗ 检测失败: ${data.error}`);
+                    showStatus(`检测失败: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                log(`✗ 检测失败: ${error.message}`);
+                showStatus(`检测失败: ${error.message}`, 'error');
+            }
+        }
+        
+        function clearLog() {
+            logElement.innerHTML = '';
+            statusElement.style.display = 'none';
+        }
+        
+        async function drawDetectionResults(faces, imageFile) {
+            const canvas = document.getElementById('resultCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            if (!ctx) {
+                log('✗ 无法获取画布上下文');
+                return;
+            }
+            
+            // Load and draw the image
+            const img = new Image();
+            img.onload = function() {
+                // Set canvas dimensions to match image
+                canvas.width = img.width > 800 ? 800 : img.width;
+                canvas.height = img.height > 600 ? 600 : img.height;
+                
+                // Draw image
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                
+                // Draw face detections
+                if (faces && faces.length > 0) {
+                    faces.forEach((face, index) => {
+                        const bbox = face.bbox;
+                        const confidence = face.confidence;
+                        
+                        // Scale coordinates to fit canvas
+                        const scaleX = canvas.width / img.width;
+                        const scaleY = canvas.height / img.height;
+                        
+                        const x = bbox[0] * scaleX;
+                        const y = bbox[1] * scaleY;
+                        const width = (bbox[2] - bbox[0]) * scaleX;
+                        const height = (bbox[3] - bbox[1]) * scaleY;
+                        
+                        // Color coding based on confidence
+                        let boxColor = '#10b981'; // Green for high confidence
+                        if (confidence < 0.3) {
+                            boxColor = '#ef4444'; // Red for low confidence
+                        } else if (confidence < 0.6) {
+                            boxColor = '#f59e0b'; // Yellow for medium confidence
+                        }
+                        
+                        // Draw bounding box
+                        ctx.strokeStyle = boxColor;
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(x, y, width, height);
+                        
+                        // Draw confidence score background
+                        ctx.fillStyle = boxColor + '80'; // Add transparency
+                        ctx.fillRect(x, y - 20, 120, 20);
+                        
+                        // Draw confidence score
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = 'bold 12px Arial';
+                        ctx.fillText(`人脸 ${index + 1} (${(confidence * 100).toFixed(1)}%)`, x + 5, y - 5);
+                        
+                        // Draw face dimensions
+                        ctx.fillStyle = '#94a3b8';
+                        ctx.font = '10px Arial';
+                        ctx.fillText(`${Math.round(width)}×${Math.round(height)}px`, x + 5, y + height + 15);
+                        
+                        // Draw landmarks if available
+                        if (face.landmarks && face.landmarks.length > 0) {
+                            ctx.fillStyle = '#f59e0b';
+                            face.landmarks.forEach(point => {
+                                const lx = point[0] * scaleX;
+                                const ly = point[1] * scaleY;
+                                ctx.beginPath();
+                                ctx.arc(lx, ly, 2, 0, Math.PI * 2);
+                                ctx.fill();
+                            });
+                        }
+                    });
+                }
+                
+                log(`✓ 绘制完成，共绘制 ${faces ? faces.length : 0} 个人脸框`);
+            };
+            
+            img.onerror = function() {
+                log('✗ 无法加载图像');
+            };
+            
+            img.src = URL.createObjectURL(imageFile);
+        }
+        
+        // Event listeners
+        checkHealthBtn.addEventListener('click', checkHealth);
+        getCurrentParamsBtn.addEventListener('click', getCurrentParams);
+        resetParamsBtn.addEventListener('click', resetParams);
+        updateParamsBtn.addEventListener('click', updateParams);
+        testDetectBtn.addEventListener('click', testDetection);
+        clearLogBtn.addEventListener('click', clearLog);
+        
+        imageFileInput.addEventListener('change', function() {
+            testDetectBtn.disabled = !this.files[0];
+        });
+        
+        // Initial log
+        log('准备就绪，请先检查服务状态');
+    </script>
+</body>
+</html>

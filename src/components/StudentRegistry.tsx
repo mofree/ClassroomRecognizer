@@ -2,8 +2,8 @@ import React, { useState, useRef } from 'react';
 import { Student, ImageQualityReport } from '../types';
 import { FaceRecognitionService } from '../services/faceRecognitionService';
 import { validateStudentImage } from '../services/geminiService';
-import { Camera, CheckCircle, AlertTriangle, Upload, X, Loader2, FolderUp, FileCheck, FileWarning, UserPlus, Layers, Wand2, Eye } from 'lucide-react';
-
+import { detectFacesFromBase64 } from '../services/apiService';
+import { Camera, CheckCircle, AlertTriangle, Upload, X, Loader2, FolderUp, FileCheck, FileWarning, UserPlus, Layers, Wand2, Eye, Users } from 'lucide-react';
 interface StudentRegistryProps {
   students: Student[];
   onAddStudent: (student: Student) => void;
@@ -35,9 +35,14 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
   const [batchFiles, setBatchFiles] = useState<File[]>([]);
   const [batchLogs, setBatchLogs] = useState<BatchLog[]>([]);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  
+  // Import/Export State
+  const [isImporting, setIsImporting] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const batchInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   /**
    * Helper: Smart Crop & Standardize
@@ -109,18 +114,27 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
       img.src = previewUrl;
       await new Promise((resolve) => { img.onload = resolve });
 
-      // 2. Detect Face to get Box
-      // Use getInstance() to ensure models are loaded
-      const detection = await FaceRecognitionService.getInstance().getFaceDetection(img);
+      // 2. Detect Face to get Box using backend API
+      const base64Data = previewUrl.split(',')[1];
+      const detectionResponse = await detectFacesFromBase64(base64Data);
       
-      if (!detection) {
+      if (!detectionResponse.success || detectionResponse.count === 0) {
         alert("未检测到人脸，或人脸过于模糊，无法标准化。请尝试更换照片。");
         setIsAnalyzing(false);
         return;
       }
 
+      // Use the first detected face
+      const face = detectionResponse.faces[0];
+      const box = {
+        x: face.bbox[0],
+        y: face.bbox[1],
+        width: face.bbox[2] - face.bbox[0],
+        height: face.bbox[3] - face.bbox[1]
+      };
+
       // 3. Process Image (Crop/Resize/Enhance)
-      const standardizedDataUrl = createStandardizedImage(img, detection.detection.box);
+      const standardizedDataUrl = createStandardizedImage(img, box);
       setPreviewUrl(standardizedDataUrl);
       setIsStandardized(true);
 
@@ -128,27 +142,32 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
       const report = await validateStudentImage(standardizedDataUrl);
       setQualityReport(report);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("标准化处理失败。");
+      alert(`标准化处理失败: ${err.message || '未知错误'}`);
     } finally {
       setIsAnalyzing(false);
     }
-  };
-
-  const handleRegister = async () => {
+  };  const handleRegister = async () => {
     if (!name || !previewUrl || (qualityReport && !qualityReport.isValid)) return;
     
     setIsRegistering(true);
     try {
-      const img = document.createElement('img');
-      img.src = previewUrl;
-      await new Promise((resolve) => { img.onload = resolve });
-
-      // We re-calculate descriptor on the standardized image to ensure the DB has the "clean" version
-      const descriptor = await FaceRecognitionService.getInstance().getFaceDescriptor(img);
+      // Extract face embedding using backend API
+      const base64Data = previewUrl.split(',')[1];
+      const detectionResponse = await detectFacesFromBase64(base64Data);
       
-      if (descriptor) {
+      if (!detectionResponse.success || detectionResponse.count === 0) {
+        alert("注册失败：无法从处理后的图像中提取特征。");
+        setIsRegistering(false);
+        return;
+      }
+
+      // Use the first detected face's embedding
+      const face = detectionResponse.faces[0];
+      const descriptor = new Float32Array(face.embedding);
+      
+      if (descriptor && descriptor.length > 0) {
         const newStudent: Student = {
           id: Date.now().toString(),
           name: name.trim(),
@@ -166,12 +185,18 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
       } else {
         alert("注册失败：无法从处理后的图像中提取特征。");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("注册失败。");
+      alert(`注册失败: ${err.message || '未知错误'}`);
     } finally {
       setIsRegistering(false);
     }
+  };  const clearImage = () => {
+    setImageFile(null);
+    setPreviewUrl(null);
+    setQualityReport(null);
+    setIsStandardized(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // --- Batch Mode Handlers ---
@@ -192,8 +217,6 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
     if (batchFiles.length === 0) return;
     setIsBatchProcessing(true);
 
-    const service = FaceRecognitionService.getInstance();
-    
     // Process sequentially
     for (let i = 0; i < batchFiles.length; i++) {
       const file = batchFiles[i];
@@ -210,29 +233,49 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
       await new Promise(r => setTimeout(r, 50));
 
       try {
-        const url = URL.createObjectURL(file);
-        const img = document.createElement('img');
-        img.src = url;
-        await new Promise((resolve, reject) => {
-           img.onload = resolve;
-           img.onerror = reject;
+        // Convert file to base64
+        const reader = new FileReader();
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            if (typeof reader.result === 'string') {
+              resolve(reader.result.split(',')[1]); // Remove data URL prefix
+            } else {
+              reject(new Error("文件读取失败"));
+            }
+          };
+          reader.onerror = () => reject(new Error("文件读取错误"));
+          reader.readAsDataURL(file);
         });
 
-        // 1. Detect
-        const detection = await service.getFaceDetection(img);
+        // 1. Detect faces using backend API
+        const detectionResponse = await detectFacesFromBase64(base64Data);
 
-        if (detection) {
-           // 2. Standardize (Crop/Resize)
-           const standardizedUrl = createStandardizedImage(img, detection.detection.box);
-           
-           // 3. Get Descriptor from Standardized Image
-           const stdImg = document.createElement('img');
-           stdImg.src = standardizedUrl;
-           await new Promise((resolve) => { stdImg.onload = resolve });
-           const descriptor = await service.getFaceDescriptor(stdImg);
+        if (detectionResponse.success && detectionResponse.count > 0) {
+          // Use the first detected face
+          const face = detectionResponse.faces[0];
+          
+          // 2. Create standardized image
+          const img = document.createElement('img');
+          img.src = `data:image/jpeg;base64,${base64Data}`;
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error("图片加载失败"));
+          });
+          
+          const box = {
+            x: face.bbox[0],
+            y: face.bbox[1],
+            width: face.bbox[2] - face.bbox[0],
+            height: face.bbox[3] - face.bbox[1]
+          };
+          
+          const standardizedUrl = createStandardizedImage(img, box);
+          
+          // 3. Extract descriptor from the detection result
+          const descriptor = new Float32Array(face.embedding);
 
-           if (descriptor) {
-             const newStudent: Student = {
+          if (descriptor && descriptor.length > 0) {
+            const newStudent: Student = {
               id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
               name: studentName,
               photoUrl: standardizedUrl,
@@ -246,9 +289,9 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
               newLogs[i] = { ...newLogs[i], status: 'success', message: '已注册 (自动处理)' };
               return newLogs;
             });
-           } else {
-             throw new Error("特征提取失败");
-           }
+          } else {
+            throw new Error("特征提取失败");
+          }
         } else {
            setBatchLogs(prev => {
             const newLogs = [...prev];
@@ -256,19 +299,138 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
             return newLogs;
           });
         }
-      } catch (error) {
+      } catch (error: any) {
+         console.error(`处理文件 ${file.name} 失败:`, error);
          setBatchLogs(prev => {
             const newLogs = [...prev];
-            newLogs[i] = { ...newLogs[i], status: 'error', message: '处理失败' };
+            newLogs[i] = { 
+              ...newLogs[i], 
+              status: 'error', 
+              message: `处理失败: ${error.message || '未知错误'}` 
+            };
             return newLogs;
           });
       }
     }
     setIsBatchProcessing(false);
   };
+  // Export students data to JSON file
+  const handleExport = () => {
+    try {
+      const dataStr = JSON.stringify(students, null, 2);
+      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+      
+      const exportFileDefaultName = `students_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', dataUri);
+      linkElement.setAttribute('download', exportFileDefaultName);
+      linkElement.click();
+      
+      console.log('Students data exported successfully');
+    } catch (error) {
+      console.error('Failed to export students data:', error);
+      alert('导出失败，请查看控制台了解详情。');
+    }
+  };
+
+  // Import students data from JSON file
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setImportFile(file);
+      setIsImporting(true);
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          if (event.target?.result) {
+            const jsonData = event.target.result as string;
+            const importedStudents = JSON.parse(jsonData);
+            
+            // Validate imported data
+            if (Array.isArray(importedStudents)) {
+              // Convert descriptors from arrays back to Float32Array
+              const validStudents = importedStudents.map((student: any) => ({
+                ...student,
+                descriptors: student.descriptors.map((desc: number[]) => new Float32Array(desc))
+              }));
+              
+              // Add imported students (replace existing ones or merge?)
+              validStudents.forEach((student: any) => {
+                // Check if student with same ID already exists
+                const existingIndex = students.findIndex(s => s.id === student.id);
+                if (existingIndex >= 0) {
+                  // Optionally update existing student
+                  // For now, we'll skip duplicates
+                  console.log(`Skipping duplicate student: ${student.name}`);
+                } else {
+                  // Add new student
+                  onAddStudent(student);
+                }
+              });
+              
+              alert(`成功导入 ${validStudents.length} 名学生数据！`);
+            } else {
+              throw new Error('Invalid data format');
+            }
+          }
+        } catch (error) {
+          console.error('Failed to import students data:', error);
+          alert('导入失败，请确保选择了有效的JSON文件。');
+        } finally {
+          setIsImporting(false);
+          setImportFile(null);
+          if (importInputRef.current) importInputRef.current.value = '';
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
 
   return (
-    <>
+    <div className="flex flex-col h-full gap-4">
+      {/* Header with Import/Export buttons */}
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <Users className="w-5 h-5" /> 学生管理
+        </h2>
+        <div className="flex gap-2">
+          <input 
+            type="file" 
+            ref={importInputRef} 
+            onChange={handleImport} 
+            accept=".json" 
+            className="hidden" 
+          />
+          <button 
+            onClick={() => importInputRef.current?.click()}
+            disabled={isImporting}
+            className="flex items-center gap-1 bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {isImporting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                导入中...
+              </>
+            ) : (
+              <>
+                <FolderUp className="w-4 h-4" />
+                导入
+              </>
+            )}
+          </button>
+          <button 
+            onClick={handleExport}
+            disabled={students.length === 0}
+            className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            <FileCheck className="w-4 h-4" />
+            导出
+          </button>
+        </div>
+      </div>
+
       {/* Full Screen Image Viewer */}
       {viewImage && (
         <div 
@@ -510,7 +672,7 @@ const StudentRegistry: React.FC<StudentRegistryProps> = ({ students, onAddStuden
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 };
 

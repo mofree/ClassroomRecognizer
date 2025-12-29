@@ -646,6 +646,13 @@ const Pose3VideoAnalyzer: React.FC = () => {
                         </span>
                       </div>
                       
+                      <div className="flex justify-between items-center p-3 bg-blue-50 rounded-lg">
+                        <span className="text-gray-700 font-medium">📖 看书/记笔记</span>
+                        <span className="text-blue-600 font-bold">
+                          {(analysisResult.behavior_minutes?.reading_writing_minutes || 0).toFixed(2)} 分钟
+                        </span>
+                      </div>
+                      
                       <div className="flex justify-between items-center p-3 bg-yellow-50 rounded-lg">
                         <span className="text-gray-700 font-medium">💻 看电脑</span>
                         <span className="text-yellow-600 font-bold">
@@ -657,13 +664,6 @@ const Pose3VideoAnalyzer: React.FC = () => {
                         <span className="text-gray-700 font-medium">📱 看手机</span>
                         <span className="text-red-600 font-bold">
                           {(analysisResult.behavior_minutes?.using_phone_minutes || 0).toFixed(2)} 分钟
-                        </span>
-                      </div>
-                      
-                      <div className="flex justify-between items-center p-3 bg-blue-50 rounded-lg">
-                        <span className="text-gray-700 font-medium">📖 看书/记笔记</span>
-                        <span className="text-blue-600 font-bold">
-                          {(analysisResult.behavior_minutes?.reading_writing_minutes || 0).toFixed(2)} 分钟
                         </span>
                       </div>
                       

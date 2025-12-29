@@ -199,10 +199,12 @@ class VideoBehaviorAnalysisService:
         object_conf_threshold: float = 0.25,
         looking_up_threshold: float = 0,
         looking_down_threshold: float = -2,
-        progress_callback=None  # 添加进度回调
+        progress_callback=None,  # 添加进度回调
+        use_batch: bool = True,  # 是否使用批量检测
+        batch_size: int = None   # 批次大小（None表示自动检测）
     ) -> Dict[str, Any]:
         """
-        个人45分钟行为追踪（优化版：跳帧采样 + 区域裁剪）
+        个人45分钟行为追踪（优化版：跳帧采样 + 区域裁剪 + 批量检测）
         
         Args:
             video_path: 视频文件路径
@@ -213,12 +215,20 @@ class VideoBehaviorAnalysisService:
             object_conf_threshold: 物体检测置信度阈值
             looking_up_threshold: 抬头阈值
             looking_down_threshold: 低头阈值
+            use_batch: 是否使用批量检测（默认True）
+            batch_size: 批次大小（None表示自动检测最佳大小）
             
         Returns:
             行为统计结果
         """
         logger.info(f"开始个人视频追踪: {video_path}, 起始时间: {start_time}s, 时长: {duration}s")
         logger.info(f"目标边界框: {target_bbox}")
+        logger.info(f"批量检测: {'启用' if use_batch else '禁用'}")
+        
+        # 自动检测最佳批次大小
+        if batch_size is None:
+            batch_size = self._get_optimal_batch_size()
+        logger.info(f"批次大小: {batch_size}")
         
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -264,57 +274,25 @@ class VideoBehaviorAnalysisService:
         logger.info(f"开始处理，裁剪区域: ({crop_x1}, {crop_y1}), 大小: {target_w}x{target_h}")
         
         try:
-            # 【优化核心】遍历采样帧索引，直接跳转
-            for i, frame_offset in enumerate(frame_indices):
-                # 计算绝对帧位置
-                absolute_frame_index = start_frame + frame_offset
-                
-                # 【优化：直接跳转到目标帧，不读取中间帧】
-                cap.set(cv2.CAP_PROP_POS_FRAMES, absolute_frame_index)
-                ret, frame = cap.read()
-                
-                if not ret:
-                    logger.warning(f"第{i+1}次采样失败：无法读取帧 {absolute_frame_index}")
-                    continue
-                
-                # 更新进度（每10次采样更新一次，减少HTTP请求）
-                if i % 10 == 0 and progress_callback:
-                    current_progress = min(99, int((i / total_samples) * 100))
-                    progress_callback(current_progress)
-                
-                # 每1000次采样输出一次日志
-                if i % 1000 == 0:
-                    logger.info(f"采样进度: {i}/{total_samples} ({i*100//total_samples}%)")
-                
-                # 【优化：裁剪目标区域，只检测该区域】
-                crop_x2 = min(frame.shape[1], target_x + target_w)
-                crop_y2 = min(frame.shape[0], target_y + target_h)
-                cropped_frame = frame[crop_y1:crop_y2, crop_x1:crop_x2]
-                
-                # 检查裁剪后的帧是否有效
-                if cropped_frame.size == 0:
-                    logger.warning(f"第{i+1}次采样：裁剪区域无效")
-                    continue
-                
-                # 执行行为检测（只检测裁剪后的小区域，速度更快）
-                result = self.pose_service.analyze_behavior_frame(
-                    cropped_frame,
-                    pose_conf_threshold=pose_conf_threshold,
-                    object_conf_threshold=object_conf_threshold,
-                    draw_skeleton=False,
-                    draw_bbox=False,
-                    looking_up_threshold=looking_up_threshold,
-                    looking_down_threshold=looking_down_threshold
+            if use_batch:
+                # 【批量检测模式】
+                self._analyze_with_batch(
+                    cap, frame_indices, start_frame, crop_x1, crop_y1, target_x, target_y, target_w, target_h,
+                    batch_size, pose_conf_threshold, object_conf_threshold,
+                    looking_up_threshold, looking_down_threshold,
+                    behavior_stats, total_samples, progress_callback
                 )
-                
-                # 统计行为（取第一个检测到的人）
-                if result['success'] and result.get('behaviors'):
-                    if len(result['behaviors']) > 0:
-                        target_behavior = result['behaviors'][0]
-                        behavior_type = target_behavior['behavior']
-                        if behavior_type in behavior_stats:
-                            behavior_stats[behavior_type] += 1
-                            sampled_count += 1
+            else:
+                # 【逐帧检测模式】
+                self._analyze_frame_by_frame(
+                    cap, frame_indices, start_frame, crop_x1, crop_y1, target_x, target_y, target_w, target_h,
+                    pose_conf_threshold, object_conf_threshold,
+                    looking_up_threshold, looking_down_threshold,
+                    behavior_stats, total_samples, progress_callback
+                )
+            
+            # 计算成功采样次数
+            sampled_count = sum(behavior_stats.values())
                 
         finally:
             cap.release()
@@ -353,6 +331,282 @@ class VideoBehaviorAnalysisService:
         logger.info("="*50 + "\n")
         
         return result
+    
+    def _get_optimal_batch_size(self) -> int:
+        """
+        根据平台和硬件自动确定最佳批次大小
+        """
+        try:
+            import torch
+            import psutil
+            
+            # 检测计算设备
+            if torch.cuda.is_available():
+                # Windows + NVIDIA GPU
+                return 32
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                # Mac Apple Silicon (M1/M2/M3)
+                return 16
+            else:
+                # CPU (根据内存调整)
+                memory_gb = psutil.virtual_memory().available / (1024**3)
+                if memory_gb > 16:
+                    return 16
+                elif memory_gb > 8:
+                    return 8
+                else:
+                    return 4
+        except Exception as e:
+            logger.warning(f"自动检测批次大小失败: {e}，使用默认值 8")
+            return 8
+    
+    def _analyze_with_batch(
+        self, cap, frame_indices, start_frame, crop_x1, crop_y1,
+        target_x, target_y, target_w, target_h, batch_size,
+        pose_conf_threshold, object_conf_threshold,
+        looking_up_threshold, looking_down_threshold,
+        behavior_stats, total_samples, progress_callback
+    ):
+        """
+        批量检测模式：收集多帧后一次性推理
+        """
+        logger.info(f"使用批量检测模式，批次大小: {batch_size}")
+        
+        batch_frames = []
+        batch_indices = []
+        
+        for i, frame_offset in enumerate(frame_indices):
+            # 计算绝对帧位置
+            absolute_frame_index = start_frame + frame_offset
+            
+            # 跳转并读取帧
+            cap.set(cv2.CAP_PROP_POS_FRAMES, absolute_frame_index)
+            ret, frame = cap.read()
+            
+            if not ret:
+                continue
+            
+            # 裁剪目标区域
+            crop_x2 = min(frame.shape[1], target_x + target_w)
+            crop_y2 = min(frame.shape[0], target_y + target_h)
+            cropped_frame = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+            
+            if cropped_frame.size == 0:
+                continue
+            
+            # 收集帧
+            batch_frames.append(cropped_frame)
+            batch_indices.append(i)
+            
+            # 当批次满了或者是最后一批，执行批量检测
+            if len(batch_frames) == batch_size or i == len(frame_indices) - 1:
+                if batch_frames:
+                    # 【批量推理】
+                    self._process_batch(
+                        batch_frames, batch_indices,
+                        pose_conf_threshold, object_conf_threshold,
+                        looking_up_threshold, looking_down_threshold,
+                        behavior_stats
+                    )
+                    
+                    # 清空批次
+                    batch_frames = []
+                    batch_indices = []
+            
+            # 更新进度
+            if i % 10 == 0 and progress_callback:
+                current_progress = min(99, int((i / total_samples) * 100))
+                progress_callback(current_progress)
+            
+            # 日志
+            if i % 1000 == 0:
+                logger.info(f"批量采样进度: {i}/{total_samples} ({i*100//total_samples}%)")
+    
+    def _process_batch(
+        self, batch_frames, batch_indices,
+        pose_conf_threshold, object_conf_threshold,
+        looking_up_threshold, looking_down_threshold,
+        behavior_stats
+    ):
+        """
+        处理一个批次的帧
+        """
+        # 批量姿态检测
+        pose_results = self.pose_service.pose_model(
+            batch_frames,
+            conf=pose_conf_threshold,
+            verbose=False
+        )
+        
+        # 批量物体检测
+        object_results = self.pose_service.object_model(
+            batch_frames,
+            conf=object_conf_threshold,
+            verbose=False
+        )
+        
+        # 处理每一帧的结果
+        for frame_idx, (pose_res, obj_res) in enumerate(zip(pose_results, object_results)):
+            try:
+                # 解析姿态和物体检测结果
+                persons = self._parse_pose_result(pose_res, looking_up_threshold, looking_down_threshold)
+                objects = self._parse_object_result(obj_res)
+                
+                # 分析行为
+                if persons:
+                    behaviors = self.pose_service._analyze_behaviors(
+                        persons, objects,
+                        batch_frames[frame_idx].shape,
+                        looking_down_threshold
+                    )
+                    
+                    # 统计第一个检测到的人的行为
+                    if behaviors:
+                        behavior_type = behaviors[0]['behavior']
+                        if behavior_type in behavior_stats:
+                            behavior_stats[behavior_type] += 1
+            except Exception as e:
+                logger.warning(f"批次中第{frame_idx}帧处理失败: {e}")
+                continue
+    
+    def _parse_pose_result(self, pose_result, looking_up_threshold, looking_down_threshold):
+        """解析YOLO姿态检测结果"""
+        persons = []
+        
+        if pose_result.boxes is None or pose_result.keypoints is None:
+            return persons
+        
+        for i, box in enumerate(pose_result.boxes):
+            bbox_xyxy = box.xyxy.cpu().numpy()[0].astype(int)
+            keypoints_data = pose_result.keypoints.data[i].cpu().numpy()
+            
+            # 转换关键点格式
+            keypoints = []
+            for kp_idx, (x, y, conf) in enumerate(keypoints_data):
+                keypoints.append({
+                    'name': self.pose_service.keypoint_names[kp_idx],
+                    'x': float(x),
+                    'y': float(y),
+                    'confidence': float(conf),
+                    'visible': conf > 0.5
+                })
+            
+            # 判断头部姿态
+            head_pose = self.pose_service._analyze_head_pose_ear_eye(
+                keypoints,
+                looking_up_threshold,
+                looking_down_threshold
+            )
+            
+            persons.append({
+                'person_id': i,
+                'bbox': {
+                    'x1': int(bbox_xyxy[0]),
+                    'y1': int(bbox_xyxy[1]),
+                    'x2': int(bbox_xyxy[2]),
+                    'y2': int(bbox_xyxy[3])
+                },
+                'keypoints': keypoints,
+                'head_pose': head_pose
+            })
+        
+        return persons
+    
+    def _parse_object_result(self, object_result):
+        """解析YOLO物体检测结果"""
+        objects = []
+        
+        if object_result.boxes is None:
+            return objects
+        
+        for box in object_result.boxes:
+            class_id = int(box.cls.cpu().numpy()[0])
+            
+            # 只关注笔记本、手机、书
+            if class_id in [63, 67, 73]:  # laptop, cell phone, book
+                bbox_xyxy = box.xyxy.cpu().numpy()[0].astype(int)
+                confidence = float(box.conf.cpu().numpy()[0])
+                
+                class_name = {63: 'laptop', 67: 'cell phone', 73: 'book'}.get(class_id, 'unknown')
+                
+                objects.append({
+                    'class_id': class_id,
+                    'class_name': class_name,
+                    'confidence': confidence,
+                    'bbox': {
+                        'x1': int(bbox_xyxy[0]),
+                        'y1': int(bbox_xyxy[1]),
+                        'x2': int(bbox_xyxy[2]),
+                        'y2': int(bbox_xyxy[3])
+                    },
+                    'center': {  # 添加 center 字段
+                        'x': (int(bbox_xyxy[0]) + int(bbox_xyxy[2])) / 2,
+                        'y': (int(bbox_xyxy[1]) + int(bbox_xyxy[3])) / 2
+                    }
+                })
+        
+        return objects
+    
+    def _analyze_frame_by_frame(
+        self, cap, frame_indices, start_frame, crop_x1, crop_y1,
+        target_x, target_y, target_w, target_h,
+        pose_conf_threshold, object_conf_threshold,
+        looking_up_threshold, looking_down_threshold,
+        behavior_stats, total_samples, progress_callback
+    ):
+        """
+        逐帧检测模式（原始方法）
+        """
+        logger.info("使用逐帧检测模式")
+        
+        for i, frame_offset in enumerate(frame_indices):
+            # 计算绝对帧位置
+            absolute_frame_index = start_frame + frame_offset
+            
+            # 跳转并读取帧
+            cap.set(cv2.CAP_PROP_POS_FRAMES, absolute_frame_index)
+            ret, frame = cap.read()
+            
+            if not ret:
+                logger.warning(f"第{i+1}次采样失败：无法读取帧 {absolute_frame_index}")
+                continue
+            
+            # 更新进度
+            if i % 10 == 0 and progress_callback:
+                current_progress = min(99, int((i / total_samples) * 100))
+                progress_callback(current_progress)
+            
+            # 日志
+            if i % 1000 == 0:
+                logger.info(f"采样进度: {i}/{total_samples} ({i*100//total_samples}%)")
+            
+            # 裁剪目标区域
+            crop_x2 = min(frame.shape[1], target_x + target_w)
+            crop_y2 = min(frame.shape[0], target_y + target_h)
+            cropped_frame = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+            
+            if cropped_frame.size == 0:
+                logger.warning(f"第{i+1}次采样：裁剪区域无效")
+                continue
+            
+            # 执行行为检测
+            result = self.pose_service.analyze_behavior_frame(
+                cropped_frame,
+                pose_conf_threshold=pose_conf_threshold,
+                object_conf_threshold=object_conf_threshold,
+                draw_skeleton=False,
+                draw_bbox=False,
+                looking_up_threshold=looking_up_threshold,
+                looking_down_threshold=looking_down_threshold
+            )
+            
+            # 统计行为
+            if result['success'] and result.get('behaviors'):
+                if len(result['behaviors']) > 0:
+                    target_behavior = result['behaviors'][0]
+                    behavior_type = target_behavior['behavior']
+                    if behavior_type in behavior_stats:
+                        behavior_stats[behavior_type] += 1
     
     def _find_target_person(
         self,

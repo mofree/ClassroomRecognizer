@@ -202,7 +202,7 @@ class VideoBehaviorAnalysisService:
         progress_callback=None  # 添加进度回调
     ) -> Dict[str, Any]:
         """
-        个人45分钟行为追踪
+        个人45分钟行为追踪（优化版：跳帧采样 + 区域裁剪）
         
         Args:
             video_path: 视频文件路径
@@ -227,22 +227,32 @@ class VideoBehaviorAnalysisService:
         # 获取视频参数
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         
-        # 跳转到起始帧
+        # 计算要处理的总帧数
         start_frame = int(start_time * fps)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        
-        # 计算要处理的帧数
         max_frames = int(duration * fps)
         
-        # 目标区域
+        # 【优化1】采样间隔：10秒检测一次
+        detection_interval_seconds = 10
+        detection_interval_frames = int(fps * detection_interval_seconds)
+        
+        # 计算需要检测的帧索引列表
+        frame_indices = list(range(0, max_frames, detection_interval_frames))
+        total_samples = len(frame_indices)
+        
+        logger.info(f"采样策略: 每{detection_interval_seconds}秒检测一次 (间隔{detection_interval_frames}帧)")
+        logger.info(f"总帧数: {max_frames}, 需要采样: {total_samples} 次")
+        
+        # 【优化2】目标区域坐标（裁剪用）
         target_x = int(target_bbox['x'])
         target_y = int(target_bbox['y'])
         target_w = int(target_bbox['w'])
         target_h = int(target_bbox['h'])
         
+        crop_x1 = max(0, target_x)
+        crop_y1 = max(0, target_y)
+        
         # 统计数据
-        frame_count = 0
-        sampled_count = 0  # 实际采样次数
+        sampled_count = 0  # 成功采样次数
         behavior_stats = {
             'listening': 0,
             'using_computer': 0,
@@ -251,86 +261,81 @@ class VideoBehaviorAnalysisService:
             'neutral': 0
         }
         
-        logger.info(f"开始处理帧，预计处理 {max_frames} 帧（每2000帧采样一次）")
+        logger.info(f"开始处理，裁剪区域: ({crop_x1}, {crop_y1}), 大小: {target_w}x{target_h}")
         
         try:
-            while frame_count < max_frames:
+            # 【优化核心】遍历采样帧索引，直接跳转
+            for i, frame_offset in enumerate(frame_indices):
+                # 计算绝对帧位置
+                absolute_frame_index = start_frame + frame_offset
+                
+                # 【优化：直接跳转到目标帧，不读取中间帧】
+                cap.set(cv2.CAP_PROP_POS_FRAMES, absolute_frame_index)
                 ret, frame = cap.read()
+                
                 if not ret:
-                    logger.warning(f"视频读取结束，已处理 {frame_count} 帧")
-                    break
-                        
-                # 更新进度回调 - 每处理一定数量的帧就更新一次进度
-                if frame_count % max(1, max_frames // 100) == 0:  # 每1%更新一次进度
-                    if progress_callback:
-                        current_progress = min(99, int((frame_count / max_frames) * 100))  # 最大99%，避免显示完成
-                        progress_callback(current_progress)
-                        
-                # 每10000帧处理一次，用于快速测试
-                if frame_count % 10000 == 0:
-                    sampled_count += 1  # 记录采样次数
-                    logger.info(f"\n========== 处理第 {frame_count} 帧 （第{sampled_count}次采样） ===========")
-                    logger.info(f"目标区域: ({target_x}, {target_y}) 大小: {target_w}x{target_h}")
-                            
-                    # 裁剪目标区域（只检测目标学生）
-                    crop_x1 = max(0, target_x)
-                    crop_y1 = max(0, target_y)
-                    crop_x2 = min(frame.shape[1], target_x + target_w)
-                    crop_y2 = min(frame.shape[0], target_y + target_h)
-                            
-                    cropped_frame = frame[crop_y1:crop_y2, crop_x1:crop_x2]
-                    logger.info(f"裁剪区域: ({crop_x1}, {crop_y1}) -> ({crop_x2}, {crop_y2})，大小: {cropped_frame.shape}")
-                            
-                    # 执行行为检测（只检测裁剪后的区域）
-                    result = self.pose_service.analyze_behavior_frame(
-                        cropped_frame,
-                        pose_conf_threshold=pose_conf_threshold,
-                        object_conf_threshold=object_conf_threshold,
-                        draw_skeleton=False,
-                        draw_bbox=False,
-                        looking_up_threshold=looking_up_threshold,
-                        looking_down_threshold=looking_down_threshold
-                    )
-                            
-                    logger.info(f"检测结果: success={result.get('success')}, 检测到 {len(result.get('behaviors', []))} 个人")
-                            
-                    # 直接使用检测结果（因为已经裁剪到目标区域）
-                    if result['success'] and result.get('behaviors'):
-                        # 取第一个检测到的人（应该就是目标学生）
-                        if len(result['behaviors']) > 0:
-                            target_behavior = result['behaviors'][0]
-                            behavior_type = target_behavior['behavior']
-                            logger.info(f"✅ 目标学生检测到: {behavior_type}")
-                            if behavior_type in behavior_stats:
-                                behavior_stats[behavior_type] += 1
-                        else:
-                            logger.warning(f"❌ 裁剪区域内未检测到学生")
-                    else:
-                        logger.warning(f"❌ 未检测到任何人")
-                        
-                frame_count += 1
-                        
-                # 每1000帧打印一次进度
-                if frame_count % 1000 == 0:
-                    logger.info(f"已处理 {frame_count}/{max_frames} 帧")
-        
+                    logger.warning(f"第{i+1}次采样失败：无法读取帧 {absolute_frame_index}")
+                    continue
+                
+                # 更新进度（每10次采样更新一次，减少HTTP请求）
+                if i % 10 == 0 and progress_callback:
+                    current_progress = min(99, int((i / total_samples) * 100))
+                    progress_callback(current_progress)
+                
+                # 每1000次采样输出一次日志
+                if i % 1000 == 0:
+                    logger.info(f"采样进度: {i}/{total_samples} ({i*100//total_samples}%)")
+                
+                # 【优化：裁剪目标区域，只检测该区域】
+                crop_x2 = min(frame.shape[1], target_x + target_w)
+                crop_y2 = min(frame.shape[0], target_y + target_h)
+                cropped_frame = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+                
+                # 检查裁剪后的帧是否有效
+                if cropped_frame.size == 0:
+                    logger.warning(f"第{i+1}次采样：裁剪区域无效")
+                    continue
+                
+                # 执行行为检测（只检测裁剪后的小区域，速度更快）
+                result = self.pose_service.analyze_behavior_frame(
+                    cropped_frame,
+                    pose_conf_threshold=pose_conf_threshold,
+                    object_conf_threshold=object_conf_threshold,
+                    draw_skeleton=False,
+                    draw_bbox=False,
+                    looking_up_threshold=looking_up_threshold,
+                    looking_down_threshold=looking_down_threshold
+                )
+                
+                # 统计行为（取第一个检测到的人）
+                if result['success'] and result.get('behaviors'):
+                    if len(result['behaviors']) > 0:
+                        target_behavior = result['behaviors'][0]
+                        behavior_type = target_behavior['behavior']
+                        if behavior_type in behavior_stats:
+                            behavior_stats[behavior_type] += 1
+                            sampled_count += 1
+                
         finally:
             cap.release()
             logger.info("视频处理完成，释放资源")
         
+        # 构建结果
         result = {
             'success': True,
-            'total_frames': frame_count,
+            'total_frames': max_frames,
             'duration_seconds': duration,
             'behavior_stats': behavior_stats,
-            'sampled_frames': sampled_count  # 实际采样次数
+            'sampled_frames': sampled_count,  # 实际成功采样次数
+            'total_samples': total_samples     # 计划采样次数
         }
         
         # 计算行为时长（分钟）
         behavior_minutes = {}
         for behavior, count in behavior_stats.items():
             if sampled_count > 0:
-                duration_minutes = (count / sampled_count) * (duration / 60)  # 直接计算分钟
+                # 基于采样比例推算总时长
+                duration_minutes = (count / sampled_count) * (duration / 60)
                 behavior_minutes[f'{behavior}_minutes'] = round(duration_minutes, 2)
             else:
                 behavior_minutes[f'{behavior}_minutes'] = 0.0
@@ -339,11 +344,12 @@ class VideoBehaviorAnalysisService:
         
         logger.info(f"\n" + "="*50)
         logger.info(f"分析完成！")
-        logger.info(f"  总帧数: {frame_count}")
-        logger.info(f"  采样次数: {sampled_count}")
+        logger.info(f"  总帧数: {max_frames}")
+        logger.info(f"  计划采样: {total_samples} 次")
+        logger.info(f"  成功采样: {sampled_count} 次")
+        logger.info(f"  采样成功率: {sampled_count*100//total_samples if total_samples > 0 else 0}%")
         logger.info(f"  行为统计: {behavior_stats}")
         logger.info(f"  行为时长(分钟): {behavior_minutes}")
-        logger.info(f"  返回结果: {result}")
         logger.info("="*50 + "\n")
         
         return result

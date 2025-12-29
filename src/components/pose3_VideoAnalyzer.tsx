@@ -621,14 +621,36 @@ const Pose3VideoAnalyzer: React.FC = () => {
                     
                     {outputVideoUrl && (
                       <div className="mt-4">
-                        <a
-                          href={outputVideoUrl}
-                          download="behavior_analysis_result.mp4"
-                          className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition-colors"
+                        <button
+                          onClick={async () => {
+                            try {
+                              // 1. 获取视频文件
+                              const response = await fetch(outputVideoUrl);
+                              const blob = await response.blob();
+                              
+                              // 2. 创建临时URL
+                              const url = window.URL.createObjectURL(blob);
+                              
+                              // 3. 触发下载
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = 'behavior_analysis_result.mp4';
+                              document.body.appendChild(a);
+                              a.click();
+                              
+                              // 4. 清理资源
+                              document.body.removeChild(a);
+                              window.URL.revokeObjectURL(url);
+                            } catch (error) {
+                              console.error('下载失败:', error);
+                              alert('下载失败，请重试');
+                            }
+                          }}
+                          className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition-colors cursor-pointer"
                         >
                           <VideoIcon className="w-5 h-5" />
                           下载标注视频
-                        </a>
+                        </button>
                       </div>
                     )}
                   </div>

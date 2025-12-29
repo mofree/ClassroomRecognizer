@@ -65,10 +65,11 @@ class VideoBehaviorAnalysisService:
         orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # 输出视频分辨率（压缩刷50%以减小文件大小）
-        output_width = orig_width // 2
+        # 输出视频参数优化
+        output_fps = 15  # 降低输出帧率到15fps（原视频通常30fps），减少编码时间
+        output_width = orig_width // 2  # 压缩50%以减小文件大小
         output_height = orig_height // 2
-        logger.info(f"原始分辨率: {orig_width}x{orig_height}, 输出分辨率: {output_width}x{output_height}")
+        logger.info(f"原始分辨率: {orig_width}x{orig_height}@{fps}fps, 输出分辨率: {output_width}x{output_height}@{output_fps}fps")
         
         # 跳转到起始帧
         start_frame = int(start_time * fps)
@@ -85,19 +86,18 @@ class VideoBehaviorAnalysisService:
             output_filename = f'class_analysis_{timestamp}.mp4'
             output_path = self.output_dir / output_filename
             
-            # 使用 MP4V 编码器，更高的压缩率
+            # 使用 MP4V 编码器
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(str(output_path), fourcc, fps, (output_width, output_height))
+            out = cv2.VideoWriter(str(output_path), fourcc, output_fps, (output_width, output_height))
             
             if not out.isOpened():
                 logger.warning("mp4v 编码器不可用，尝试使用 XVID")
                 fourcc = cv2.VideoWriter_fourcc(*'XVID')
                 output_filename = f'class_analysis_{timestamp}.avi'
                 output_path = self.output_dir / output_filename
-                out = cv2.VideoWriter(str(output_path), fourcc, fps, (output_width, output_height))
+                out = cv2.VideoWriter(str(output_path), fourcc, output_fps, (output_width, output_height))
         
         # 统计数据
-        frame_count = 0
         behavior_stats = {
             'listening': 0,
             'using_computer': 0,
@@ -106,20 +106,25 @@ class VideoBehaviorAnalysisService:
             'neutral': 0
         }
         
-        logger.info(f"开始处理帧，预计处理 {max_frames} 帧")
+        logger.info(f"开始处理帧，需要采样 {max_frames // 2} 帧（每2帧采样一次，每100帧检测一次）")
         
         # 缓存最新的行为检测结果（用于绘制标注）
         latest_behaviors = None
+        processed_count = 0  # 实际处理的帧数
         
         try:
-            while frame_count < max_frames:
+            # 【优化：跳帧读取】直接跳到需要的帧，不读取中间帧
+            for frame_idx in range(0, max_frames, 2):  # 每2帧采样一次（实现30fps→输出15fps）
+                # 跳转到目标帧
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame + frame_idx)
                 ret, frame = cap.read()
+                
                 if not ret:
-                    logger.warning(f"视频读取结束，已处理 {frame_count} 帧")
+                    logger.warning(f"视频读取结束，已处理 {processed_count} 帧")
                     break
                 
-                # 每50帧检测一次（更新标注信息）
-                if frame_count % 50 == 0:
+                # 每100帧检测一次（更新标注信息）
+                if frame_idx % 100 == 0:
                     # 执行行为检测（不绘制，只获取结果）
                     result = self.pose_service.analyze_behavior_frame(
                         frame,
@@ -142,7 +147,7 @@ class VideoBehaviorAnalysisService:
                     if result['success'] and result.get('behaviors'):
                         latest_behaviors = result['behaviors']
                 
-                # 在当前帧上绘制最新的标注
+                # 在当前帧上绘制最新的标注并写入视频
                 if output_video and out is not None:
                     if latest_behaviors is not None:
                         # 在原始帧上绘制标注
@@ -160,17 +165,17 @@ class VideoBehaviorAnalysisService:
                         resized_frame = cv2.resize(frame, (output_width, output_height))
                         out.write(resized_frame)
                 
-                frame_count += 1
+                processed_count += 1
                 
-                # 更新进度
-                if progress_callback and frame_count % 50 == 0:
-                    progress = int((frame_count / max_frames) * 100)
+                # 更新进度（每处理50帧更新一次）
+                if progress_callback and processed_count % 50 == 0:
+                    progress = int((frame_idx / max_frames) * 100)
                     progress_callback(progress)
                 
-                # 每100帧打印一次进度
-                if frame_count % 100 == 0:
-                    progress = int((frame_count / max_frames) * 100)
-                    logger.info(f"已处理 {frame_count}/{max_frames} 帧 ({progress}%)")
+                # 每处理100帧打印一次进度
+                if processed_count % 100 == 0:
+                    progress = int((frame_idx / max_frames) * 100)
+                    logger.info(f"已处理 {processed_count} 帧，进度: {frame_idx}/{max_frames} ({progress}%)")
         
         finally:
             cap.release()
@@ -180,7 +185,7 @@ class VideoBehaviorAnalysisService:
         
         result = {
             'success': True,
-            'total_frames': frame_count,
+            'total_frames': processed_count,  # 实际处理的帧数
             'duration_seconds': duration,
             'behavior_stats': behavior_stats,
             'output_video_path': str(output_path) if output_path else None
